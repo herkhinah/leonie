@@ -1,31 +1,17 @@
-{ pkgs, ... }:
-{
-  # https://devenv.sh/basics/
-  env.GREET = "devenv";
-
-  # https://devenv.sh/packages/
-  packages = [ pkgs.git ];
-
-  enterShell = ''
-    hello
-    git --version
-  '';
-
-  # https://devenv.sh/languages/
-  languages.nix.enable = true;
-
-  # https://devenv.sh/scripts/
-  scripts.hello.exec = "echo hello from $GREET";
-
+{ pkgs, inputs, lib, ... }:
+let
+  fenix = inputs.fenix.packages.${pkgs.system}.stable;
+in {
   # https://devenv.sh/pre-commit-hooks/
   pre-commit = {
-    # settings.rust.toolchain = "stable";
+    tools = {
+      cargo = lib.mkForce fenix.cargo;
+      rustfmt = lib.mkForce fenix.rustfmt;
+      clippy = lib.mkForce fenix.clippy;
+    };
     hooks = {
       clippy.enable = true;
       rustfmt.enable = true;
     };
   };
-
-  # https://devenv.sh/processes/
-  # processes.ping.exec = "ping example.com";
 }

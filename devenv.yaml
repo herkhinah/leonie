@@ -1,8 +1,6 @@
 inputs:
-  nixpkgs:
-    url: github:herkhinah/nixpkgs-fenix/main
-  pre-commit-hooks:
-    url: github:herkhinah/pre-commit-hooks.nix/fenix
+  fenix:
+    url: github:nix-community/fenix
     inputs:
       nixpkgs:
         follows: nixpkgs
