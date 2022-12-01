@@ -86,16 +86,18 @@ pub struct PartialRenaming {
 }
 
 impl PartialRenaming {
-    pub fn lift(&mut self) {
+    pub fn lift<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
         self.ren.insert(self.cod, self.dom);
         self.dom += 1;
         self.cod += 1;
-    }
 
-    pub fn unlift(&mut self) {
+        let res = f(self);
+
         self.dom -= 1;
         self.cod -= 1;
         self.ren.remove(&self.cod);
+
+        res
     }
 
     pub fn invert(metas: &MetaCxt, gamma: Lvl, spine: Spine) -> Result<Self, Error> {
@@ -117,48 +119,31 @@ impl PartialRenaming {
             ren,
         })
     }
-}
 
-pub fn rename(
-    mcxt: &mut MetaCxt,
-    m: MetaVar,
-    pren: &mut PartialRenaming,
-    v: Value,
-) -> Result<Term, Error> {
-    fn go(
-        metas: &mut MetaCxt,
-        m: MetaVar,
-        pren: &mut PartialRenaming,
-        v: Value,
-    ) -> Result<Term, Error> {
+    fn go(&mut self, metas: &mut MetaCxt, m: MetaVar, v: Value) -> Result<Term, Error> {
         match metas.force(v) {
             Value::VFlex(m_, sp) => {
                 if m == m_ {
                     return error!(ErrorKind::MetaOccurs(m, Value::VFlex(m_, sp)));
                 }
 
-                go_sp(metas, m, pren, Term::TMeta(m_), sp)
+                self.go_sp(metas, m, Term::TMeta(m_), sp)
             }
-            Value::VRigid(x, sp) => match pren.ren.get(&x) {
-                Some(x_) => go_sp(metas, m, pren, Term::TV(lvl2ix(pren.dom, *x_)), sp),
+            Value::VRigid(x, sp) => match self.ren.get(&x) {
+                Some(x_) => self.go_sp(metas, m, Term::TV(lvl2ix(self.dom, *x_)), sp),
                 None => error!(ErrorKind::MetaScope(m, Value::VRigid(x, sp))),
             },
             Value::Vλ(x, t) => {
-                let t = t.eval(metas, Value::new_rigid(pren.cod));
-                pren.lift();
-                let t = go(metas, m, pren, t);
-                pren.unlift();
-
-                Ok(Term::Tλ(x, t?.into()))
+                let t = t.eval(metas, Value::new_rigid(self.cod));
+                let t = self.lift(|pren| pren.go(metas, m, t))?;
+                Ok(Term::Tλ(x, t.into()))
             }
             Value::VΠ(x, a, b) => {
-                let a = go(metas, m, pren, *a)?;
-                let b = b.eval(metas, Value::new_rigid(pren.cod));
-                pren.lift();
-                let b = go(metas, m, pren, b);
-                pren.unlift();
+                let a = self.go(metas, m, *a)?;
+                let b = b.eval(metas, Value::new_rigid(self.cod));
+                let b = self.lift(|pren| pren.go(metas, m, b))?;
 
-                Ok(Term::TΠ(x, a.into(), b?.into()))
+                Ok(Term::TΠ(x, a.into(), b.into()))
             }
             Value::VΣ(_, _, _) => todo!(),
             Value::Vσ(_, _) => todo!(),
@@ -167,9 +152,9 @@ pub fn rename(
     }
 
     fn go_sp(
+        &mut self,
         mcxt: &mut MetaCxt,
         m: MetaVar,
-        pren: &mut PartialRenaming,
         mut t: Term,
         sp: Spine,
     ) -> Result<Term, Error> {
@@ -178,13 +163,20 @@ pub fn rename(
         }
 
         for u in sp.into_iter() {
-            t = Term::TApp(t.into(), go(mcxt, m, pren, u)?.into());
+            t = Term::TApp(t.into(), self.go(mcxt, m, u)?.into());
         }
 
         Ok(t)
     }
 
-    go(mcxt, m, pren, v)
+    pub fn rename(
+        self: &mut PartialRenaming,
+        mcxt: &mut MetaCxt,
+        m: MetaVar,
+        v: Value,
+    ) -> Result<Term, Error> {
+        self.go(mcxt, m, v)
+    }
 }
 
 pub fn unify_sp(mcxt: &mut MetaCxt, lvl: Lvl, sp: Spine, sp_: Spine) -> Result<(), Error> {
@@ -240,8 +232,8 @@ pub fn unify(mcxt: &mut MetaCxt, lvl: Lvl, l: Value, r: Value) -> Result<(), Err
 }
 
 pub fn solve(metas: &mut MetaCxt, lvl: Lvl, m: MetaVar, sp: Spine, v: Value) -> Result<(), Error> {
-    let pren = PartialRenaming::invert(metas, lvl, sp)?;
-    let rhs = rename(metas, m, &mut pren.clone(), v)?;
+    let mut pren = PartialRenaming::invert(metas, lvl, sp)?;
+    let rhs = pren.rename(metas, m, v)?;
     let solution = Env::default().eval(metas, lams(pren.dom, rhs));
 
     metas[m] = MetaEntry::Solved(solution);
