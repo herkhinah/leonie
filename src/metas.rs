@@ -2,7 +2,6 @@ use std::backtrace::Backtrace;
 use std::collections::HashMap as Map;
 
 use crate::{
-    lvl2ix,
     value::{Spine, Value},
     Cxt, Env, Lvl, Term,
 };
@@ -88,13 +87,13 @@ pub struct PartialRenaming {
 impl PartialRenaming {
     pub fn lift<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
         self.ren.insert(self.cod, self.dom);
-        self.dom += 1;
-        self.cod += 1;
+        self.dom = self.dom.inc();
+        self.cod = self.cod.inc();
 
         let res = f(self);
 
-        self.dom -= 1;
-        self.cod -= 1;
+        self.dom = self.dom.dec();
+        self.cod = self.cod.dec();
         self.ren.remove(&self.cod);
 
         res
@@ -107,14 +106,14 @@ impl PartialRenaming {
         for (dom, t) in spine.iter().cloned().enumerate() {
             match metas.force(t) {
                 Value::VRigid(x, y) if !ren.contains_key(&x) && y.is_empty() => {
-                    ren.insert(x, dom);
+                    ren.insert(x, Lvl(dom));
                 }
                 _ => return error!(ErrorKind::MetaInvert(spine)),
             }
         }
 
         Ok(PartialRenaming {
-            dom,
+            dom: Lvl(dom),
             cod: gamma,
             ren,
         })
@@ -130,7 +129,7 @@ impl PartialRenaming {
                 self.go_sp(metas, m, Term::TMeta(m_), sp)
             }
             Value::VRigid(x, sp) => match self.ren.get(&x) {
-                Some(x_) => self.go_sp(metas, m, Term::TV(lvl2ix(self.dom, *x_)), sp),
+                Some(x_) => self.go_sp(metas, m, Term::TV(x_.as_index(self.dom)), sp),
                 None => error!(ErrorKind::MetaScope(m, Value::VRigid(x, sp))),
             },
             Value::Vλ(x, t) => {
@@ -201,25 +200,25 @@ pub fn unify(mcxt: &mut MetaCxt, lvl: Lvl, l: Value, r: Value) -> Result<(), Err
             let a = t.eval(mcxt, Value::new_rigid(lvl));
             let b = t_.eval(mcxt, Value::new_rigid(lvl));
 
-            unify(mcxt, lvl + 1, a, b)
+            unify(mcxt, lvl.inc(), a, b)
         }
         (t, Value::Vλ(_, t_)) => {
             let a = t.app(mcxt, Value::new_rigid(lvl));
             let b = t_.eval(mcxt, Value::new_rigid(lvl));
 
-            unify(mcxt, lvl + 1, a, b)
+            unify(mcxt, lvl.inc(), a, b)
         }
         (Value::Vλ(_, t), t_) => {
             let a = t.eval(mcxt, Value::new_rigid(lvl));
             let b = t_.app(mcxt, Value::new_rigid(lvl));
 
-            unify(mcxt, lvl + 1, a, b)
+            unify(mcxt, lvl.inc(), a, b)
         }
         (Value::VΠ(_, a, b), Value::VΠ(_, a_, b_)) => {
             unify(mcxt, lvl, *a, *a_)?;
             let b = b.eval(mcxt, Value::new_rigid(lvl));
             let b_ = b_.eval(mcxt, Value::new_rigid(lvl));
-            unify(mcxt, lvl + 1, b, b_)
+            unify(mcxt, lvl.inc(), b, b_)
         }
         (Value::VRigid(x, sp), Value::VRigid(x_, sp_)) if x == x_ => unify_sp(mcxt, lvl, sp, sp_),
         (Value::VFlex(m, sp), Value::VFlex(m_, sp_)) if m == m_ => unify_sp(mcxt, lvl, sp, sp_),
@@ -241,7 +240,7 @@ pub fn solve(metas: &mut MetaCxt, lvl: Lvl, m: MetaVar, sp: Spine, v: Value) -> 
 }
 
 pub fn lams(lvl: Lvl, mut t: Term) -> Term {
-    for i in 0..lvl {
+    for i in 0..*lvl {
         t = Term::Tλ(format!("x{}", i + 1).into(), t.into());
     }
     t

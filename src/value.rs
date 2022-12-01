@@ -1,5 +1,4 @@
 use crate::{
-    lvl2ix,
     metas::{MetaCxt, MetaVar},
     Closure, Lvl, Name, Term, VTm, VTy,
 };
@@ -69,17 +68,17 @@ impl Value {
     pub fn quote(self, metas: &mut MetaCxt, lvl: Lvl) -> Term {
         match self {
             Value::VFlex(m, sp) => sp.quote(metas, lvl, Term::TMeta(m)),
-            Value::VRigid(x, sp) => sp.quote(metas, lvl, Term::TV(lvl2ix(lvl, x))),
+            Value::VRigid(x, sp) => sp.quote(metas, lvl, Term::TV(x.as_index(lvl))),
             Value::Vλ(x, clos) => {
                 let val = clos.eval(metas, Value::new_rigid(lvl));
-                Term::Tλ(x, val.quote(metas, lvl + 1).into())
+                Term::Tλ(x, val.quote(metas, lvl.inc()).into())
             }
             Value::VΠ(x, a, clos) => {
                 let a = a.quote(metas, lvl);
 
                 let b = clos.eval(metas, Value::new_rigid(lvl));
 
-                let b = b.quote(metas, lvl + 1);
+                let b = b.quote(metas, lvl.inc());
 
                 Term::TΠ(x, a.into(), b.into())
             }

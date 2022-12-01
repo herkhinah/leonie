@@ -45,7 +45,38 @@ impl std::fmt::Debug for Ix {
 }
 
 /// De Bruijn level
-type Lvl = usize;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct Lvl(usize);
+
+impl Lvl {
+    pub fn as_index(&self, lvl: Self) -> Ix {
+        Ix(lvl.0 - self.0 - 1)
+    }
+
+    #[must_use]
+    pub fn inc(self) -> Self {
+        Lvl(self.0 + 1)
+    }
+
+    #[must_use]
+    pub fn dec(self) -> Self {
+        Lvl(self.0 - 1)
+    }
+}
+
+impl std::ops::Deref for Lvl {
+    type Target = usize;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Lvl {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum Term {
@@ -190,7 +221,7 @@ mod env {
         type Output = Value;
 
         fn index(&self, index: Lvl) -> &Self::Output {
-            &self.0[index]
+            &self.0[index.0]
         }
     }
 }
@@ -245,13 +276,13 @@ impl Cxt {
         f: impl FnOnce(&mut Self) -> T,
     ) -> (T, (Name, Type)) {
         self.env.push(Value::new_rigid(self.lvl));
-        self.lvl += 1;
+        self.lvl = self.lvl.inc();
         self.types.push((name, r#type));
         self.bds.push(BD::Bound);
         let res = f(self);
 
         let (name, r#type, _) = self.pop();
-        self.lvl -= 1;
+        self.lvl = self.lvl.dec();
 
         (res, (name, r#type))
     }
@@ -264,11 +295,11 @@ impl Cxt {
         f: impl FnOnce(&mut Self) -> T,
     ) -> (T, (Name, Type, Value)) {
         self.env.push(val);
-        self.lvl += 1;
+        self.lvl = self.lvl.inc();
         self.types.push((name, r#type));
         self.bds.push(BD::Defined);
         let res = f(self);
-        self.lvl -= 1;
+        self.lvl = self.lvl.dec();
 
         (res, self.pop())
     }
@@ -336,7 +367,7 @@ pub fn check(metas: &mut MetaCxt, cxt: &mut Cxt, raw: Raw, ty: Type) -> Result<T
 pub fn close_val(metas: &mut MetaCxt, cxt: &Cxt, val: Value) -> Closure {
     let lvl = cxt.lvl;
     let env = cxt.env.clone();
-    let t = val.quote(metas, lvl + 1);
+    let t = val.quote(metas, lvl.inc());
     Closure::new(env, t.into())
 }
 
@@ -468,10 +499,6 @@ pub fn infer(metas: &mut MetaCxt, cxt: &mut Cxt, raw: Raw) -> Result<(Term, Type
     }
 }
 
-pub fn lvl2ix(lvl: Lvl, x: Lvl) -> Ix {
-    Ix(lvl - x - 1)
-}
-
 mod fresh {
     use std::ops::{Deref, Index};
 
@@ -537,8 +564,8 @@ mod fresh {
     impl Index<Lvl> for Fresh {
         type Output = Name;
 
-        fn index(&self, index: usize) -> &Self::Output {
-            &self.0[index]
+        fn index(&self, index: Lvl) -> &Self::Output {
+            &self.0[index.0]
         }
     }
 }
@@ -811,7 +838,7 @@ impl<'a> Display for TPrettyPrinter<'a> {
                     for (lvl, bd) in bds.iter().enumerate() {
                         match bd {
                             BD::Bound => {
-                                write!(f, " {}", fresh[lvl])?;
+                                write!(f, " {}", fresh[Lvl(lvl)])?;
                             }
                             BD::Defined => {}
                         }
