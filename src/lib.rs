@@ -5,10 +5,13 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+use fresh::Fresh;
 use metas::{unify, Error, MetaCxt, MetaVar};
+use value::{Type, Value};
 
 pub mod metas;
 pub mod parser;
+pub mod value;
 
 pub type Name = Rc<str>;
 
@@ -62,98 +65,6 @@ type VTy = Box<Value>;
 
 type VTm = Box<Value>;
 
-#[derive(Debug, Clone, Default)]
-pub struct Spine(Vec<Value>);
-
-impl Spine {
-    pub fn quote(mut self, metas: &mut MetaCxt, lvl: Lvl, tm: Term) -> Term {
-        if let Some(u) = self.0.pop() {
-            Term::TApp(
-                self.quote(metas, lvl, tm).into(),
-                u.quote(metas, lvl).into(),
-            )
-        } else {
-            tm
-        }
-    }
-
-    pub fn push(&mut self, value: Value) {
-        self.0.push(value)
-    }
-
-    pub fn into_iter(self) -> std::vec::IntoIter<Value> {
-        self.0.into_iter()
-    }
-}
-
-impl std::ops::Deref for Spine {
-    type Target = Vec<Value>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum Value {
-    /// unsolved meta variabel
-    VFlex(MetaVar, Spine),
-    /// bound variable applied to zero or more arguments
-    VRigid(Lvl, Spine),
-    // lambda closure
-    Vλ(Name, Closure),
-    // pi type
-    VΠ(Name, VTy, Closure),
-    // sigma type
-    VΣ(Name, VTy, Closure),
-    // pair
-    Vσ(VTm, VTm),
-    // universe
-    VU,
-}
-
-impl Value {
-    pub fn quote(self, metas: &mut MetaCxt, lvl: Lvl) -> Term {
-        match self {
-            Value::VFlex(m, sp) => sp.quote(metas, lvl, Term::TMeta(m)),
-            Value::VRigid(x, sp) => sp.quote(metas, lvl, Term::TV(lvl2ix(lvl, x))),
-            Value::Vλ(x, clos) => {
-                let val = clos.eval(metas, Value::VRigid(lvl, Spine::default()));
-                Term::Tλ(x, val.quote(metas, lvl + 1).into())
-            }
-            Value::VΠ(x, a, clos) => {
-                let a = a.quote(metas, lvl);
-
-                let b = clos.eval(metas, Value::VRigid(lvl, Spine::default()));
-
-                let b = b.quote(metas, lvl + 1);
-
-                Term::TΠ(x, a.into(), b.into())
-            }
-            Value::VΣ(_, _, _) => todo!(),
-            Value::Vσ(_, _) => todo!(),
-            Value::VU => Term::TU,
-        }
-    }
-}
-
-fn v_app(metas: &mut MetaCxt, v1: Value, v2: Value) -> Value {
-    match v1 {
-        Value::VFlex(m, mut sp) => {
-            sp.push(v2);
-            Value::VFlex(m, sp)
-        }
-        Value::VRigid(x, mut sp) => {
-            sp.push(v2);
-            Value::VRigid(x, sp)
-        }
-        Value::Vλ(_, clos) => clos.eval(metas, v2),
-        _ => panic!(),
-    }
-}
-
-pub type Type = Value;
-
 #[derive(Debug, Clone)]
 pub struct Closure(Env, Tm);
 
@@ -175,7 +86,8 @@ mod env {
 
     use crate::{
         metas::{MetaCxt, MetaEntry},
-        v_app, Closure, Ix, Lvl, Spine, Term, Value, BD,
+        value::Spine,
+        Closure, Ix, Lvl, Term, Value, BD,
     };
 
     #[derive(Debug, Clone, Default)]
@@ -229,13 +141,13 @@ mod env {
                 }
                 Term::TMeta(m) => match metas[m].clone() {
                     MetaEntry::Solved(v) => v,
-                    MetaEntry::Unsolved => Value::VFlex(m, Spine::default()),
+                    MetaEntry::Unsolved => Value::new_flex(m),
                 },
                 Term::TApp(t, u) => {
                     let t = self.eval(metas, *t);
                     let u = self.eval(metas, *u);
 
-                    v_app(metas, t, u)
+                    t.app(metas, u)
                 }
                 Term::TU => Value::VU,
                 Term::TInsertedMeta(m, bds) => {
@@ -246,7 +158,7 @@ mod env {
                             let mut val = val.clone();
                             for (t, bds) in self.iter().zip(bds.into_iter()) {
                                 if let BD::Bound = bds {
-                                    val = v_app(metas, val, t.clone());
+                                    val = val.app(metas, t.clone());
                                 }
                             }
                             val
@@ -332,7 +244,7 @@ impl Cxt {
         r#type: Type,
         f: impl FnOnce(&mut Self) -> T,
     ) -> (T, (Name, Type)) {
-        self.env.push(Value::VRigid(self.lvl, Spine::default()));
+        self.env.push(Value::new_rigid(self.lvl));
         self.lvl += 1;
         self.types.push((name, r#type));
         self.bds.push(BD::Bound);
@@ -378,7 +290,7 @@ pub fn check(metas: &mut MetaCxt, cxt: &mut Cxt, raw: Raw, ty: Type) -> Result<T
                 check(metas, cxt, *t, a)?
             }
             (Raw::RLam(x, t), Value::VΠ(_, a, b)) => {
-                let b = b.eval(metas, Value::VRigid(cxt.lvl, Spine::default()));
+                let b = b.eval(metas, Value::new_rigid(cxt.lvl));
                 let body = cxt.bind(x.clone(), *a, |cxt| check(metas, cxt, *t, b)).0?;
                 Term::Tλ(x, body.into())
             }
@@ -630,8 +542,6 @@ mod fresh {
         }
     }
 }
-
-use fresh::Fresh;
 
 impl Display for Raw {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

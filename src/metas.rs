@@ -1,7 +1,11 @@
 use std::backtrace::Backtrace;
 use std::collections::HashMap as Map;
 
-use crate::{lvl2ix, v_app, Cxt, Env, Lvl, Spine, Term, Value};
+use crate::{
+    lvl2ix,
+    value::{Spine, Value},
+    Cxt, Env, Lvl, Term,
+};
 
 #[derive(Debug)]
 pub struct Error {
@@ -140,7 +144,7 @@ pub fn rename(
                 None => error!(ErrorKind::MetaScope(m, Value::VRigid(x, sp))),
             },
             Value::Vλ(x, t) => {
-                let t = t.eval(metas, Value::VRigid(pren.cod, Spine::default()));
+                let t = t.eval(metas, Value::new_rigid(pren.cod));
                 pren.lift();
                 let t = go(metas, m, pren, t);
                 pren.unlift();
@@ -149,7 +153,7 @@ pub fn rename(
             }
             Value::VΠ(x, a, b) => {
                 let a = go(metas, m, pren, *a)?;
-                let b = b.eval(metas, Value::VRigid(pren.cod, Spine::default()));
+                let b = b.eval(metas, Value::new_rigid(pren.cod));
                 pren.lift();
                 let b = go(metas, m, pren, b);
                 pren.unlift();
@@ -202,27 +206,27 @@ pub fn unify(mcxt: &mut MetaCxt, lvl: Lvl, l: Value, r: Value) -> Result<(), Err
     match (l, r) {
         (Value::VU, Value::VU) => Ok(()),
         (Value::Vλ(_, t), Value::Vλ(_, t_)) => {
-            let a = t.eval(mcxt, Value::VRigid(lvl, Spine::default()));
-            let b = t_.eval(mcxt, Value::VRigid(lvl, Spine::default()));
+            let a = t.eval(mcxt, Value::new_rigid(lvl));
+            let b = t_.eval(mcxt, Value::new_rigid(lvl));
 
             unify(mcxt, lvl + 1, a, b)
         }
         (t, Value::Vλ(_, t_)) => {
-            let a = v_app(mcxt, t, Value::VRigid(lvl, Spine::default()));
-            let b = t_.eval(mcxt, Value::VRigid(lvl, Spine::default()));
+            let a = t.app(mcxt, Value::new_rigid(lvl));
+            let b = t_.eval(mcxt, Value::new_rigid(lvl));
 
             unify(mcxt, lvl + 1, a, b)
         }
         (Value::Vλ(_, t), t_) => {
-            let a = t.eval(mcxt, Value::VRigid(lvl, Spine::default()));
-            let b = v_app(mcxt, t_, Value::VRigid(lvl, Spine::default()));
+            let a = t.eval(mcxt, Value::new_rigid(lvl));
+            let b = t_.app(mcxt, Value::new_rigid(lvl));
 
             unify(mcxt, lvl + 1, a, b)
         }
         (Value::VΠ(_, a, b), Value::VΠ(_, a_, b_)) => {
             unify(mcxt, lvl, *a, *a_)?;
-            let b = b.eval(mcxt, Value::VRigid(lvl, Spine::default()));
-            let b_ = b_.eval(mcxt, Value::VRigid(lvl, Spine::default()));
+            let b = b.eval(mcxt, Value::new_rigid(lvl));
+            let b_ = b_.eval(mcxt, Value::new_rigid(lvl));
             unify(mcxt, lvl + 1, b, b_)
         }
         (Value::VRigid(x, sp), Value::VRigid(x_, sp_)) if x == x_ => unify_sp(mcxt, lvl, sp, sp_),
