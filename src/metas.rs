@@ -140,7 +140,7 @@ pub fn rename(
                 None => error!(ErrorKind::MetaScope(m, Value::VRigid(x, sp))),
             },
             Value::Vλ(x, t) => {
-                let t = t.eval(metas, Value::VRigid(pren.cod, vec![]));
+                let t = t.eval(metas, Value::VRigid(pren.cod, Spine::default()));
                 pren.lift();
                 let t = go(metas, m, pren, t);
                 pren.unlift();
@@ -149,7 +149,7 @@ pub fn rename(
             }
             Value::VΠ(x, a, b) => {
                 let a = go(metas, m, pren, *a)?;
-                let b = b.eval(metas, Value::VRigid(pren.cod, vec![]));
+                let b = b.eval(metas, Value::VRigid(pren.cod, Spine::default()));
                 pren.lift();
                 let b = go(metas, m, pren, b);
                 pren.unlift();
@@ -183,15 +183,16 @@ pub fn rename(
     go(mcxt, m, pren, v)
 }
 
-pub fn unify_sp(mcxt: &mut MetaCxt, lvl: Lvl, mut sp: Spine, mut sp_: Spine) -> Result<(), Error> {
-    match (sp.pop(), sp_.pop()) {
-        (None, None) => Ok(()),
-        (Some(t), Some(t_)) => {
-            unify_sp(mcxt, lvl, sp, sp_)?;
-            unify(mcxt, lvl, t, t_)
-        }
-        _ => error!(ErrorKind::MetaSpine(sp, sp_)),
+pub fn unify_sp(mcxt: &mut MetaCxt, lvl: Lvl, sp: Spine, sp_: Spine) -> Result<(), Error> {
+    if sp.len() != sp_.len() {
+        return error!(ErrorKind::MetaSpine(sp, sp_));
     }
+
+    for (t, t_) in sp.into_iter().zip(sp_.into_iter()) {
+        unify(mcxt, lvl, t, t_)?;
+    }
+
+    Ok(())
 }
 
 pub fn unify(mcxt: &mut MetaCxt, lvl: Lvl, l: Value, r: Value) -> Result<(), Error> {
@@ -201,27 +202,27 @@ pub fn unify(mcxt: &mut MetaCxt, lvl: Lvl, l: Value, r: Value) -> Result<(), Err
     match (l, r) {
         (Value::VU, Value::VU) => Ok(()),
         (Value::Vλ(_, t), Value::Vλ(_, t_)) => {
-            let a = t.eval(mcxt, Value::VRigid(lvl, vec![]));
-            let b = t_.eval(mcxt, Value::VRigid(lvl, vec![]));
+            let a = t.eval(mcxt, Value::VRigid(lvl, Spine::default()));
+            let b = t_.eval(mcxt, Value::VRigid(lvl, Spine::default()));
 
             unify(mcxt, lvl + 1, a, b)
         }
         (t, Value::Vλ(_, t_)) => {
-            let a = v_app(mcxt, t, Value::VRigid(lvl, vec![]));
-            let b = t_.eval(mcxt, Value::VRigid(lvl, vec![]));
+            let a = v_app(mcxt, t, Value::VRigid(lvl, Spine::default()));
+            let b = t_.eval(mcxt, Value::VRigid(lvl, Spine::default()));
 
             unify(mcxt, lvl + 1, a, b)
         }
         (Value::Vλ(_, t), t_) => {
-            let a = t.eval(mcxt, Value::VRigid(lvl, vec![]));
-            let b = v_app(mcxt, t_, Value::VRigid(lvl, vec![]));
+            let a = t.eval(mcxt, Value::VRigid(lvl, Spine::default()));
+            let b = v_app(mcxt, t_, Value::VRigid(lvl, Spine::default()));
 
             unify(mcxt, lvl + 1, a, b)
         }
         (Value::VΠ(_, a, b), Value::VΠ(_, a_, b_)) => {
             unify(mcxt, lvl, *a, *a_)?;
-            let b = b.eval(mcxt, Value::VRigid(lvl, vec![]));
-            let b_ = b_.eval(mcxt, Value::VRigid(lvl, vec![]));
+            let b = b.eval(mcxt, Value::VRigid(lvl, Spine::default()));
+            let b_ = b_.eval(mcxt, Value::VRigid(lvl, Spine::default()));
             unify(mcxt, lvl + 1, b, b_)
         }
         (Value::VRigid(x, sp), Value::VRigid(x_, sp_)) if x == x_ => unify_sp(mcxt, lvl, sp, sp_),
