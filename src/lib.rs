@@ -1,12 +1,11 @@
 use std::{
-    borrow::Cow,
     fmt::{Debug, Display},
     ops::Deref,
     rc::Rc,
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use metas::{unify, Error, MetaCxt, MetaEntry, MetaVar};
+use metas::{unify, Error, MetaCxt, MetaVar};
 
 pub mod metas;
 pub mod parser;
@@ -93,22 +92,36 @@ fn v_app(metas: &mut MetaCxt, v1: Value, v2: Value) -> Value {
             sp.push(v2);
             Value::VRigid(x, sp)
         }
-        Value::Vλ(_, (mut env, t)) => {
-            env.push(v2);
-            eval(metas, Cow::Owned(env), *t)
-        }
+        Value::Vλ(_, clos) => clos.eval(metas, v2),
         _ => panic!(),
     }
 }
 
 pub type Type = Value;
 
-pub type Closure = (Env, Tm);
+#[derive(Debug, Clone)]
+pub struct Closure(Env, Tm);
+
+impl Closure {
+    pub fn new(env: Env, term: Tm) -> Self {
+        Closure(env, term)
+    }
+
+    pub fn eval(self, metas: &mut MetaCxt, v: Value) -> Value {
+        let Closure(mut env, t) = self;
+        env.push(v);
+
+        env.eval(metas, *t)
+    }
+}
 
 mod env {
     use std::{ops::Index, slice::Iter};
 
-    use crate::{Ix, Lvl, Value};
+    use crate::{
+        metas::{MetaCxt, MetaEntry},
+        v_app, Closure, Ix, Lvl, Term, Value, BD,
+    };
 
     #[derive(Debug, Clone, Default)]
     pub struct Env(Vec<Value>);
@@ -124,6 +137,77 @@ mod env {
 
         pub fn iter(&self) -> Iter<Value> {
             self.0.iter()
+        }
+
+        pub fn eval_under_binder<T>(
+            &mut self,
+            value: Value,
+            f: impl FnOnce(&mut Self) -> T,
+        ) -> (T, Value) {
+            self.push(value);
+            (f(self), self.pop().unwrap())
+        }
+
+        pub fn eval(&mut self, metas: &mut MetaCxt, term: Term) -> Value {
+            match term {
+                Term::TV(x) => self[x].clone(),
+                Term::Tλ(x, t) => Value::Vλ(x, Closure::new(self.clone(), t)),
+                Term::TΠ(x, a, b) => {
+                    let a = self.eval(metas, *a);
+
+                    Value::VΠ(x, a.into(), Closure::new(self.clone(), b))
+                }
+                Term::Tσ(a, b) => {
+                    let a = self.eval(metas, *a);
+                    let b = self.eval(metas, *b);
+
+                    Value::Vσ(a.into(), b.into())
+                }
+                Term::TΣ(name, a, b) => {
+                    let a = self.eval(metas, *a);
+                    Value::VΣ(name, a.into(), Closure::new(self.clone(), b))
+                }
+                Term::TLet(_, _, t, u) => {
+                    let value = self.eval(metas, *t);
+
+                    self.eval_under_binder(value, |env| env.eval(metas, *u)).0
+                }
+                Term::TMeta(m) => match metas[m].clone() {
+                    MetaEntry::Solved(v) => v,
+                    MetaEntry::Unsolved => Value::VFlex(m, vec![]),
+                },
+                Term::TApp(t, u) => {
+                    let t = self.eval(metas, *t);
+                    let u = self.eval(metas, *u);
+
+                    v_app(metas, t, u)
+                }
+                Term::TU => Value::VU,
+                Term::TInsertedMeta(m, bds) => {
+                    let mut args = Vec::new();
+
+                    match &metas[m] {
+                        MetaEntry::Solved(val) => {
+                            let mut val = val.clone();
+                            for (t, bds) in self.iter().zip(bds.into_iter()) {
+                                if let BD::Bound = bds {
+                                    val = v_app(metas, val, t.clone());
+                                }
+                            }
+                            val
+                        }
+                        MetaEntry::Unsolved => {
+                            for (t, bds) in self.iter().cloned().zip(bds.into_iter()) {
+                                if let BD::Bound = bds {
+                                    args.push(t.clone());
+                                }
+                            }
+
+                            Value::VFlex(m, args)
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -231,71 +315,6 @@ impl Cxt {
     }
 }
 
-pub fn eval(metas: &mut MetaCxt, mut env: Cow<'_, Env>, tm: Term) -> Value {
-    match tm {
-        Term::TV(x) => env[x].clone(),
-        Term::Tλ(x, t) => Value::Vλ(x, (env.into_owned(), t)),
-        Term::TΠ(x, a, b) => {
-            let a = eval(metas, env.clone(), *a);
-
-            let closure = (env.into_owned(), b);
-
-            Value::VΠ(x, a.into(), closure)
-        }
-        Term::Tσ(a, b) => {
-            let a = eval(metas, env.clone(), *a);
-            let b = eval(metas, env, *b);
-
-            Value::Vσ(a.into(), b.into())
-        }
-        Term::TΣ(name, a, b) => {
-            let a = eval(metas, env.clone(), *a);
-            let closure = (env.into_owned(), b);
-            Value::VΣ(name, a.into(), closure)
-        }
-        Term::TLet(_, _, t, u) => {
-            let val = eval(metas, env.clone(), *t);
-            env.to_mut().push(val);
-            eval(metas, env, *u)
-        }
-        Term::TMeta(m) => match metas[m].clone() {
-            MetaEntry::Solved(v) => v,
-            MetaEntry::Unsolved => Value::VFlex(m, vec![]),
-        },
-        Term::TApp(t, u) => {
-            let t = eval(metas, env.clone(), *t);
-            let u = eval(metas, env, *u);
-
-            v_app(metas, t, u)
-        }
-        Term::TU => Value::VU,
-        Term::TInsertedMeta(m, bds) => {
-            let mut args = Vec::new();
-
-            match &metas[m] {
-                MetaEntry::Solved(val) => {
-                    let mut val = val.clone();
-                    for (t, bds) in env.iter().zip(bds.into_iter()) {
-                        if let BD::Bound = bds {
-                            val = v_app(metas, val, t.clone());
-                        }
-                    }
-                    val
-                }
-                MetaEntry::Unsolved => {
-                    for (t, bds) in env.iter().cloned().zip(bds.into_iter()) {
-                        if let BD::Bound = bds {
-                            args.push(t.clone());
-                        }
-                    }
-
-                    Value::VFlex(m, args)
-                }
-            }
-        }
-    }
-}
-
 pub fn check(metas: &mut MetaCxt, cxt: &mut Cxt, raw: Raw, ty: Type) -> Result<Term, Error> {
     fn check_(metas: &mut MetaCxt, cxt: &mut Cxt, raw: Raw, ty: Type) -> Result<Term, Error> {
         Ok(match (raw, ty) {
@@ -304,15 +323,15 @@ pub fn check(metas: &mut MetaCxt, cxt: &mut Cxt, raw: Raw, ty: Type) -> Result<T
                 check(metas, cxt, *t, a)?
             }
             (Raw::RLam(x, t), Value::VΠ(_, a, b)) => {
-                let b = eval_closure(metas, b, Value::VRigid(cxt.lvl, vec![]));
+                let b = b.eval(metas, Value::VRigid(cxt.lvl, vec![]));
                 let body = cxt.bind(x.clone(), *a, |cxt| check(metas, cxt, *t, b)).0?;
                 Term::Tλ(x, body.into())
             }
             (Raw::RLet(x, a, t, u), a_) => {
                 let a = check(metas, cxt, *a, Value::VU)?;
-                let va = eval(metas, Cow::Borrowed(&cxt.env), a.clone());
+                let va = cxt.env.eval(metas, a.clone());
                 let t = check(metas, cxt, *t, va.clone())?;
-                let vt = eval(metas, Cow::Borrowed(&cxt.env), t.clone());
+                let vt = cxt.env.eval(metas, t.clone());
                 let u = cxt
                     .define(x.clone(), vt, va, |cxt| check(metas, cxt, *u, a_))
                     .0?;
@@ -351,7 +370,7 @@ pub fn close_val(metas: &mut MetaCxt, cxt: &Cxt, val: Value) -> Closure {
     let lvl = cxt.lvl;
     let env = cxt.env.clone();
     let t = quote(metas, lvl + 1, val);
-    (env, t.into())
+    Closure::new(env, t.into())
 }
 
 pub fn infer(metas: &mut MetaCxt, cxt: &mut Cxt, raw: Raw) -> Result<(Term, Type), Error> {
@@ -373,7 +392,7 @@ pub fn infer(metas: &mut MetaCxt, cxt: &mut Cxt, raw: Raw) -> Result<(Term, Type
             Raw::RLam(mut x, t) => {
                 let mut a = {
                     let m = metas.fresh_meta(cxt);
-                    eval(metas, Cow::Borrowed(&cxt.env), m)
+                    cxt.env.eval(metas, m)
                 };
 
                 let (t, b) = {
@@ -394,12 +413,12 @@ pub fn infer(metas: &mut MetaCxt, cxt: &mut Cxt, raw: Raw) -> Result<(Term, Type
                     tty => {
                         let mut a = {
                             let m = metas.fresh_meta(cxt);
-                            eval(metas, Cow::Borrowed(&cxt.env), m)
+                            cxt.env.eval(metas, m)
                         };
                         let (x, b) = {
                             let (m, (x, a_)) = cxt.bind("a".into(), a, |cxt| metas.fresh_meta(cxt));
                             a = a_;
-                            (x, (cxt.env.clone(), Box::new(m)))
+                            (x, Closure::new(cxt.env.clone(), Box::new(m)))
                         };
 
                         unify(
@@ -414,8 +433,8 @@ pub fn infer(metas: &mut MetaCxt, cxt: &mut Cxt, raw: Raw) -> Result<(Term, Type
                 let u = check(metas, cxt, *u, a)?;
 
                 let ty = {
-                    let ty = eval(metas, Cow::Borrowed(&cxt.env), u.clone());
-                    eval_closure(metas, b, ty)
+                    let ty = cxt.env.eval(metas, u.clone());
+                    b.eval(metas, ty)
                 };
 
                 (Term::TApp(t.into(), u.into()), ty)
@@ -424,7 +443,7 @@ pub fn infer(metas: &mut MetaCxt, cxt: &mut Cxt, raw: Raw) -> Result<(Term, Type
             Raw::RPi(mut x, a, b) => {
                 let a = check(metas, cxt, *a, Value::VU)?;
                 let b = {
-                    let va = eval(metas, Cow::Borrowed(&cxt.env), a.clone());
+                    let va = cxt.env.eval(metas, a.clone());
                     let (b, (x_, _)) = cxt.bind(x, va, |cxt| check(metas, cxt, *b, Value::VU));
                     x = x_;
                     b?
@@ -435,10 +454,10 @@ pub fn infer(metas: &mut MetaCxt, cxt: &mut Cxt, raw: Raw) -> Result<(Term, Type
             Raw::RLet(x, a, t, u) => {
                 let a = check(metas, cxt, *a, Value::VU)?;
 
-                let va = eval(metas, Cow::Borrowed(&cxt.env), a.clone());
+                let va = cxt.env.eval(metas, a.clone());
                 let t = check(metas, cxt, *t, va.clone())?;
 
-                let vt = eval(metas, Cow::Borrowed(&cxt.env), t.clone());
+                let vt = cxt.env.eval(metas, t.clone());
                 let (u, b) = cxt
                     .define(x.clone(), vt, va, |cxt| infer(metas, cxt, *u))
                     .0?;
@@ -452,7 +471,7 @@ pub fn infer(metas: &mut MetaCxt, cxt: &mut Cxt, raw: Raw) -> Result<(Term, Type
             Raw::RHole => {
                 let a = {
                     let m = metas.fresh_meta(cxt);
-                    eval(metas, Cow::Borrowed(&cxt.env), m)
+                    cxt.env.eval(metas, m)
                 };
                 let t = metas.fresh_meta(cxt);
                 (t, a)
@@ -486,16 +505,14 @@ pub fn quote(metas: &mut MetaCxt, lvl: Lvl, val: Value) -> Term {
     match val {
         Value::VFlex(m, sp) => quote_spine(metas, lvl, Term::TMeta(m), sp),
         Value::VRigid(x, sp) => quote_spine(metas, lvl, Term::TV(lvl2ix(lvl, x)), sp),
-        Value::Vλ(x, (mut env, t)) => {
-            env.push(Value::VRigid(lvl, vec![]));
-            let val = eval(metas, Cow::Owned(env), *t);
+        Value::Vλ(x, clos) => {
+            let val = clos.eval(metas, Value::VRigid(lvl, vec![]));
             Term::Tλ(x, quote(metas, lvl + 1, val).into())
         }
-        Value::VΠ(x, a, (mut env, b)) => {
+        Value::VΠ(x, a, clos) => {
             let a = quote(metas, lvl, *a);
-            env.push(Value::VRigid(lvl, vec![]));
 
-            let b = eval(metas, Cow::Owned(env), *b);
+            let b = clos.eval(metas, Value::VRigid(lvl, vec![]));
 
             let b = quote(metas, lvl + 1, b);
 
@@ -520,12 +537,6 @@ pub fn quote_spine(metas: &mut MetaCxt, lvl: Lvl, tm: Term, mut spine: Spine) ->
 
 pub fn lvl2ix(lvl: Lvl, x: Lvl) -> Ix {
     Ix(lvl - x - 1)
-}
-
-pub fn eval_closure(mcxt: &mut MetaCxt, clos: Closure, v: Value) -> Value {
-    let (mut env, t) = clos;
-    env.push(v);
-    eval(mcxt, Cow::Owned(env), *t)
 }
 
 mod fresh {

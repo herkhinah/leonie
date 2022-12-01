@@ -1,7 +1,7 @@
+use std::backtrace::Backtrace;
 use std::collections::HashMap as Map;
-use std::{backtrace::Backtrace, borrow::Cow};
 
-use crate::{eval, eval_closure, lvl2ix, v_app, Cxt, Env, Lvl, Spine, Term, Value};
+use crate::{lvl2ix, v_app, Cxt, Env, Lvl, Spine, Term, Value};
 
 #[derive(Debug)]
 pub struct Error {
@@ -140,7 +140,7 @@ pub fn rename(
                 None => error!(ErrorKind::MetaScope(m, Value::VRigid(x, sp))),
             },
             Value::Vλ(x, t) => {
-                let t = eval_closure(metas, t, Value::VRigid(pren.cod, vec![]));
+                let t = t.eval(metas, Value::VRigid(pren.cod, vec![]));
                 pren.lift();
                 let t = go(metas, m, pren, t);
                 pren.unlift();
@@ -149,7 +149,7 @@ pub fn rename(
             }
             Value::VΠ(x, a, b) => {
                 let a = go(metas, m, pren, *a)?;
-                let b = eval_closure(metas, b, Value::VRigid(pren.cod, vec![]));
+                let b = b.eval(metas, Value::VRigid(pren.cod, vec![]));
                 pren.lift();
                 let b = go(metas, m, pren, b);
                 pren.unlift();
@@ -201,27 +201,27 @@ pub fn unify(mcxt: &mut MetaCxt, lvl: Lvl, l: Value, r: Value) -> Result<(), Err
     match (l, r) {
         (Value::VU, Value::VU) => Ok(()),
         (Value::Vλ(_, t), Value::Vλ(_, t_)) => {
-            let a = eval_closure(mcxt, t, Value::VRigid(lvl, vec![]));
-            let b = eval_closure(mcxt, t_, Value::VRigid(lvl, vec![]));
+            let a = t.eval(mcxt, Value::VRigid(lvl, vec![]));
+            let b = t_.eval(mcxt, Value::VRigid(lvl, vec![]));
 
             unify(mcxt, lvl + 1, a, b)
         }
         (t, Value::Vλ(_, t_)) => {
             let a = v_app(mcxt, t, Value::VRigid(lvl, vec![]));
-            let b = eval_closure(mcxt, t_, Value::VRigid(lvl, vec![]));
+            let b = t_.eval(mcxt, Value::VRigid(lvl, vec![]));
 
             unify(mcxt, lvl + 1, a, b)
         }
         (Value::Vλ(_, t), t_) => {
-            let a = eval_closure(mcxt, t, Value::VRigid(lvl, vec![]));
+            let a = t.eval(mcxt, Value::VRigid(lvl, vec![]));
             let b = v_app(mcxt, t_, Value::VRigid(lvl, vec![]));
 
             unify(mcxt, lvl + 1, a, b)
         }
         (Value::VΠ(_, a, b), Value::VΠ(_, a_, b_)) => {
             unify(mcxt, lvl, *a, *a_)?;
-            let b = eval_closure(mcxt, b, Value::VRigid(lvl, vec![]));
-            let b_ = eval_closure(mcxt, b_, Value::VRigid(lvl, vec![]));
+            let b = b.eval(mcxt, Value::VRigid(lvl, vec![]));
+            let b_ = b_.eval(mcxt, Value::VRigid(lvl, vec![]));
             unify(mcxt, lvl + 1, b, b_)
         }
         (Value::VRigid(x, sp), Value::VRigid(x_, sp_)) if x == x_ => unify_sp(mcxt, lvl, sp, sp_),
@@ -237,7 +237,7 @@ pub fn unify(mcxt: &mut MetaCxt, lvl: Lvl, l: Value, r: Value) -> Result<(), Err
 pub fn solve(metas: &mut MetaCxt, lvl: Lvl, m: MetaVar, sp: Spine, v: Value) -> Result<(), Error> {
     let pren = PartialRenaming::invert(metas, lvl, sp)?;
     let rhs = rename(metas, m, &mut pren.clone(), v)?;
-    let solution = eval(metas, Cow::Owned(Env::default()), lams(pren.dom, rhs));
+    let solution = Env::default().eval(metas, lams(pren.dom, rhs));
 
     metas[m] = MetaEntry::Solved(solution);
     Ok(())
