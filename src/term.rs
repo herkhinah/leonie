@@ -22,33 +22,31 @@ impl<'a> std::fmt::Display for TPrettyPrinter<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let TPrettyPrinter(cxt, t) = self;
 
-        const ATOM_P: u8 = 3;
-        const APP_P: u8 = 2;
-        const PI_P: u8 = 1;
-        const LET_P: u8 = 0;
+        const ATOM_P: i8 = 3;
+        const APP_P: i8 = 2;
+        const PI_P: i8 = 1;
+        const LET_P: i8 = 0;
 
-        fn show_parens(p_old: u8, p_curr: u8) -> bool {
+        fn parenthize(
+            show_parens: impl FnOnce() -> bool,
+            f: &mut std::fmt::Formatter<'_>,
+            fun: impl FnOnce(&mut std::fmt::Formatter<'_>) -> std::fmt::Result,
+        ) -> std::fmt::Result {
+            if show_parens() {
+                write!(f, "(")?;
+                fun(f)?;
+                write!(f, ")")
+            } else {
+                fun(f)
+            }
+        }
+
+        fn show_parens(p_old: i8, p_curr: i8) -> bool {
             p_curr < p_old
         }
 
-        fn open(p_old: u8, p_curr: u8, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            if show_parens(p_old, p_curr) {
-                write!(f, "(")?;
-            }
-
-            Ok(())
-        }
-
-        fn close(p_old: u8, p_curr: u8, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            if show_parens(p_old, p_curr) {
-                write!(f, ")")?;
-            }
-
-            Ok(())
-        }
-
         fn print(
-            prec: u8,
+            prec: i8,
             term: &Term,
             f: &mut std::fmt::Formatter<'_>,
             fresh: &mut Fresh,
@@ -57,76 +55,75 @@ impl<'a> std::fmt::Display for TPrettyPrinter<'a> {
                 Term::TV(x) => {
                     write!(f, "{}", fresh[*x])
                 }
-                Term::Tλ(x, ref t) => {
-                    let x = fresh.freshen_and_insert(x.clone());
-                    open(prec, LET_P, f)?;
-                    write!(f, "λ {x}")?;
+                Term::Tλ(x, ref t) => parenthize(
+                    || show_parens(prec, LET_P),
+                    f,
+                    |f| {
+                        let x = fresh.freshen_and_insert(x.clone());
 
-                    let mut t = t;
-
-                    loop {
-                        match &**t {
-                            Term::Tλ(x, t_) => {
-                                let x = fresh.freshen_and_insert(x.clone());
-                                write!(f, " {x}")?;
-                                t = t_;
-                            }
-                            other => {
-                                write!(f, ". ")?;
-                                print(LET_P, other, f, fresh)?;
-
-                                break;
-                            }
-                        }
-                    }
-
-                    close(prec, LET_P, f)
-                }
-                Term::TΠ(x, a, ref b) => {
-                    open(prec, PI_P, f)?;
-
-                    if x.deref() == "_" {
-                        print(APP_P, a, f, fresh)?;
-                        write!(f, " → ")?;
-                        fresh.freshen_and_insert(x.clone());
-                        print(PI_P, b, f, fresh)?;
-                    } else {
-                        fresh.freshen_and_insert_after(
-                            x.clone(),
-                            |fresh, x| -> std::fmt::Result {
-                                write!(f, "({x} : ")?;
-                                print(LET_P, a, f, fresh)?;
-                                write!(f, ")")
-                            },
-                        )?;
-
-                        let mut b = b;
-
+                        write!(f, "λ {x}")?;
+                        let mut t = t;
                         loop {
-                            match &**b {
-                                Term::TΠ(x, a, b_) if x.deref() != "_" => {
-                                    fresh.freshen_and_insert_after(
-                                        x.clone(),
-                                        |fresh, x| -> std::fmt::Result {
-                                            write!(f, "({x} : ")?;
-                                            print(LET_P, a, f, fresh)?;
-                                            write!(f, ")")
-                                        },
-                                    )?;
-
-                                    b = b_;
+                            match &**t {
+                                Term::Tλ(x, t_) => {
+                                    let x = fresh.freshen_and_insert(x.clone());
+                                    write!(f, " {x}")?;
+                                    t = t_;
                                 }
                                 other => {
-                                    write!(f, " → ")?;
-                                    print(PI_P, other, f, fresh)?;
-                                    break;
+                                    write!(f, ". ")?;
+                                    print(LET_P, other, f, fresh)?;
+
+                                    break Ok(());
                                 }
                             }
                         }
-                    }
+                    },
+                ),
+                Term::TΠ(x, a, ref b) => parenthize(
+                    || show_parens(prec, PI_P),
+                    f,
+                    |f| {
+                        if x.deref() == "_" {
+                            print(APP_P, a, f, fresh)?;
+                            write!(f, " → ")?;
+                            fresh.freshen_and_insert(x.clone());
+                            print(PI_P, b, f, fresh)
+                        } else {
+                            fresh.freshen_and_insert_after(
+                                x.clone(),
+                                |fresh, x| -> std::fmt::Result {
+                                    write!(f, "({x} : ")?;
+                                    print(LET_P, a, f, fresh)?;
+                                    write!(f, ")")
+                                },
+                            )?;
 
-                    close(prec, PI_P, f)
-                }
+                            let mut b = b;
+
+                            loop {
+                                match &**b {
+                                    Term::TΠ(x, a, b_) if x.deref() != "_" => {
+                                        fresh.freshen_and_insert_after(
+                                            x.clone(),
+                                            |fresh, x| -> std::fmt::Result {
+                                                write!(f, "({x} : ")?;
+                                                print(LET_P, a, f, fresh)?;
+                                                write!(f, ")")
+                                            },
+                                        )?;
+
+                                        b = b_;
+                                    }
+                                    other => {
+                                        write!(f, " → ")?;
+                                        break print(PI_P, other, f, fresh);
+                                    }
+                                }
+                            }
+                        }
+                    },
+                ),
                 Term::Tσ(_, _) => todo!(),
                 Term::TΣ(_, _, _) => todo!(),
                 Term::TLet(x, a, b, c) => {
@@ -149,46 +146,45 @@ impl<'a> std::fmt::Display for TPrettyPrinter<'a> {
                 }
                 Term::TMeta(m) => write!(f, "?{m}"),
                 Term::TInsertedMeta(m, bds) => {
-                    let mut braces = false;
+                    let show_parens = || {
+                        let mut braces = false;
 
-                    for bd in bds {
-                        match bd {
-                            BD::Bound => {
-                                braces = true;
-                                break;
+                        for bd in bds {
+                            match bd {
+                                BD::Bound => {
+                                    braces = true;
+                                    break;
+                                }
+                                BD::Defined => {}
                             }
-                            BD::Defined => {}
                         }
-                    }
 
-                    braces = braces && show_parens(prec, APP_P);
-                    if braces {
-                        write!(f, "(?{m}")?;
-                    } else {
-                        write!(f, "?{m} ")?;
-                    }
-                    for (lvl, bd) in bds.iter().enumerate() {
-                        match bd {
-                            BD::Bound => {
-                                write!(f, " {}", fresh[Lvl(lvl)])?;
+                        braces && show_parens(prec, APP_P)
+                    };
+
+                    parenthize(show_parens, f, |f| {
+                        write!(f, "?{m}")?;
+                        for (lvl, bd) in bds.iter().enumerate() {
+                            match bd {
+                                BD::Bound => {
+                                    write!(f, " {}", fresh[Lvl(lvl)])?;
+                                }
+                                BD::Defined => {}
                             }
-                            BD::Defined => {}
                         }
-                    }
 
-                    if braces {
-                        write!(f, ")")?;
-                    }
-
-                    Ok(())
+                        Ok(())
+                    })
                 }
-                Term::TApp(t, u) => {
-                    open(prec, APP_P, f)?;
-                    print(APP_P, t, f, fresh)?;
-                    write!(f, " ")?;
-                    print(ATOM_P, u, f, fresh)?;
-                    close(prec, APP_P, f)
-                }
+                Term::TApp(t, u) => parenthize(
+                    || show_parens(prec, APP_P),
+                    f,
+                    |f| {
+                        print(APP_P, t, f, fresh)?;
+                        write!(f, " ")?;
+                        print(ATOM_P, u, f, fresh)
+                    },
+                ),
                 Term::TU => write!(f, "U"),
             }
         }
