@@ -76,9 +76,9 @@ impl MetaCxt {
 
 #[derive(Debug, Clone)]
 pub struct PartialRenaming {
-    /// size of Γ
-    cod: Lvl,
     /// size of Δ
+    cod: Lvl,
+    /// size of Γ
     dom: Lvl,
     /// mapping from Δ vars to Γ vars
     ren: Map<Lvl, Lvl>,
