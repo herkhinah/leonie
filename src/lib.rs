@@ -314,6 +314,7 @@ pub fn check(metas: &mut MetaCxt, cxt: &mut Cxt, raw: Raw, ty: Type) -> Result<T
             (Raw::RHole, _) => metas.fresh_meta(cxt),
             (t, expected) => {
                 let (t, inferred) = infer(metas, cxt, t)?;
+
                 unify(metas, cxt.lvl, expected, inferred)?;
                 t
             }

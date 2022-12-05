@@ -9,9 +9,10 @@ use leonie::{
 
 fn main() -> Result<(), Vec<Simple<Token>>> {
     let str = r#"
-  let id : (A : U) -> A -> A := λ A. (λ x. x)
-  U
-"#;
+    let id : (A : U) -> A -> A := λ A. (λ a. a)
+    let id2 : (A : U) -> A -> A := λ A. (λ a. id _ a)
+    U
+    "#;
 
     if let Some(raw) = parse(str)? {
         let mut metas = MetaCxt::default();

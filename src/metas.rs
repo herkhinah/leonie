@@ -63,10 +63,18 @@ impl MetaCxt {
         Term::TInsertedMeta(m, cxt.bds.clone())
     }
 
-    pub fn force(&self, v: Value) -> Value {
+    pub fn force(&mut self, v: Value) -> Value {
         match v {
             Value::VFlex(m, sp) => match &self[m] {
-                MetaEntry::Solved(v) => v.clone(),
+                MetaEntry::Solved(v) => {
+                    let mut v = v.clone();
+
+                    for arg in sp.into_iter() {
+                        v = v.app(self, arg);
+                    }
+
+                    v
+                }
                 MetaEntry::Unsolved => Value::VFlex(m, sp),
             },
             v => v,
@@ -99,7 +107,7 @@ impl PartialRenaming {
         res
     }
 
-    pub fn invert(metas: &MetaCxt, gamma: Lvl, spine: Spine) -> Result<Self, Error> {
+    pub fn invert(metas: &mut MetaCxt, gamma: Lvl, spine: Spine) -> Result<Self, Error> {
         let mut ren = Map::new();
         let dom = spine.len();
 

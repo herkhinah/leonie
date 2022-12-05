@@ -21,8 +21,14 @@ impl Spine {
     pub fn push(&mut self, value: Value) {
         self.0.push(value)
     }
+}
 
-    pub fn into_iter(self) -> std::vec::IntoIter<Value> {
+impl std::iter::IntoIterator for Spine {
+    type Item = Value;
+
+    type IntoIter = std::vec::IntoIter<Value>;
+
+    fn into_iter(self) -> Self::IntoIter {
         self.0.into_iter()
     }
 }
