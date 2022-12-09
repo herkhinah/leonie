@@ -156,10 +156,14 @@ pub fn parse_block() -> impl Parser<Token, Raw, Error = Simple<Token>> {
         });
 
     let p_lam = ctrl("λ")
-        .ignore_then(p_binder.clone())
+        .ignore_then(p_binder.clone().repeated().at_least(1))
         .then_ignore(ctrl("."))
         .then(p_raw.clone())
-        .map(|(x, t)| Raw::RLam(x, t.into()));
+        .map(|(x, t)| {
+            x.into_iter()
+                .rev()
+                .fold(t, |body, arg| Raw::RLam(arg, body.into()))
+        });
     let p_let = just(Token::Var("let".to_string()))
         .ignore_then(p_binder.clone())
         .then_ignore(ctrl(":"))
