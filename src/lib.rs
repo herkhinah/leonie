@@ -15,6 +15,9 @@ pub mod raw;
 pub mod term;
 pub mod value;
 
+#[cfg(test)]
+mod tests;
+
 pub type Name = Rc<str>;
 
 pub type SourcePos = std::ops::Range<usize>;
@@ -172,6 +175,10 @@ mod env {
                     }
                 }
             }
+        }
+
+        pub fn level(&self) -> Lvl {
+            Lvl(self.0.len())
         }
     }
 
@@ -464,4 +471,8 @@ pub fn infer(metas: &mut MetaCxt, cxt: &mut Cxt, raw: Raw) -> Result<(Term, Type
             res
         }
     }
+}
+
+pub fn normal_form(env: &mut Env, metas: &mut MetaCxt, term: Term) -> Term {
+    env.eval(metas, term).quote(metas, env.level())
 }
