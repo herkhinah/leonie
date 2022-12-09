@@ -1,28 +1,39 @@
-use chumsky::prelude::Simple;
+use std::io::Read;
 
 use leonie::{
-    infer,
-    metas::MetaCxt,
-    parser::{parse, Token},
-    Cxt,
+    env::Env, infer, metas::MetaCxt, normal_form, parser::parse, term::TPrettyPrinter, Cxt,
 };
 
-fn main() -> Result<(), Vec<Simple<Token>>> {
-    let str = r#"
-    let id : (A : U) -> A -> A := λ A. (λ a. a)
-    let id2 : (A : U) -> A -> A := λ A. (λ a. id _ a)
-    U
-    "#;
+fn main() -> Result<(), ()> {
+    let mut input = String::new();
+    let stdin = std::io::stdin();
+    let mut handle = stdin.lock();
+    if handle.read_to_string(&mut input).is_err() {
+        println!("failed to read input");
+    }
 
-    if let Some(raw) = parse(str)? {
+    if let Ok(Some(raw)) = parse(&input) {
         let mut metas = MetaCxt::default();
         let mut cxt = Cxt::default();
 
-        match infer(&mut metas, &mut cxt, raw) {
-            Ok((norm, ty)) => println!("success: {norm:?} {ty:?}"),
-            Err(err) => println!("error: {:?} {err:#?}", cxt.pos()),
-        }
-    }
+        if let Ok((term, ty)) = infer(&mut metas, &mut cxt, raw) {
+            let nf_term = normal_form(&mut Env::default(), &mut metas, term);
+            let nf_type = ty.quote(&mut metas, cxt.lvl());
 
-    Ok(())
+            println!(
+                "{}\n  :\n{}",
+                TPrettyPrinter(&Cxt::default(), &nf_term),
+                TPrettyPrinter(&Cxt::default(), &nf_type)
+            );
+
+            Ok(())
+        } else {
+            println!("failed to typecheck input");
+
+            Err(())
+        }
+    } else {
+        println!("failed to parse input");
+        Err(())
+    }
 }
