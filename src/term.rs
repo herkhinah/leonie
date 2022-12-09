@@ -45,6 +45,23 @@ impl<'a> std::fmt::Display for TPrettyPrinter<'a> {
             p_curr < p_old
         }
 
+        fn print_lambda_body(
+            term: &Term,
+            f: &mut std::fmt::Formatter<'_>,
+            fresh: &mut Fresh,
+        ) -> std::fmt::Result {
+            match term {
+                Term::Tλ(x, term) => fresh.with_unfresh(x, |fresh, x| {
+                    write!(f, " {x}")?;
+                    print_lambda_body(term, f, fresh)
+                }),
+                other => {
+                    write!(f, ". ")?;
+                    print(LET_P, other, f, fresh)
+                }
+            }
+        }
+
         fn print(
             prec: i8,
             term: &Term,
@@ -55,31 +72,16 @@ impl<'a> std::fmt::Display for TPrettyPrinter<'a> {
                 Term::TV(x) => {
                     write!(f, "{}", fresh[*x])
                 }
-                Term::Tλ(x, ref t) => parenthize(
-                    || show_parens(prec, LET_P),
-                    f,
-                    |f| {
-                        let x = fresh.freshen_and_insert(x.clone());
-
-                        write!(f, "λ {x}")?;
-                        let mut t = t;
-                        loop {
-                            match &**t {
-                                Term::Tλ(x, t_) => {
-                                    let x = fresh.freshen_and_insert(x.clone());
-                                    write!(f, " {x}")?;
-                                    t = t_;
-                                }
-                                other => {
-                                    write!(f, ". ")?;
-                                    print(LET_P, other, f, fresh)?;
-
-                                    break Ok(());
-                                }
-                            }
-                        }
-                    },
-                ),
+                Term::Tλ(x, ref term) => fresh.with_unfresh(x, |fresh, x| {
+                    parenthize(
+                        || show_parens(prec, LET_P),
+                        f,
+                        |f| {
+                            write!(f, "λ {x}")?;
+                            print_lambda_body(term, f, fresh)
+                        },
+                    )
+                }),
                 Term::TΠ(x, a, ref b) => parenthize(
                     || show_parens(prec, PI_P),
                     f,
@@ -87,60 +89,27 @@ impl<'a> std::fmt::Display for TPrettyPrinter<'a> {
                         if x.deref() == "_" {
                             print(APP_P, a, f, fresh)?;
                             write!(f, " → ")?;
-                            fresh.freshen_and_insert(x.clone());
-                            print(PI_P, b, f, fresh)
                         } else {
-                            fresh.freshen_and_insert_after(
-                                x.clone(),
-                                |fresh, x| -> std::fmt::Result {
-                                    write!(f, "({x} : ")?;
-                                    print(LET_P, a, f, fresh)?;
-                                    write!(f, ")")
-                                },
-                            )?;
-
-                            let mut b = b;
-
-                            loop {
-                                match &**b {
-                                    Term::TΠ(x, a, b_) if x.deref() != "_" => {
-                                        fresh.freshen_and_insert_after(
-                                            x.clone(),
-                                            |fresh, x| -> std::fmt::Result {
-                                                write!(f, "({x} : ")?;
-                                                print(LET_P, a, f, fresh)?;
-                                                write!(f, ")")
-                                            },
-                                        )?;
-
-                                        b = b_;
-                                    }
-                                    other => {
-                                        write!(f, " → ")?;
-                                        break print(PI_P, other, f, fresh);
-                                    }
-                                }
-                            }
+                            let x = fresh.freshen(x);
+                            write!(f, "({x} : ")?;
+                            print(LET_P, a, f, fresh)?;
+                            write!(f, ") → ")?;
                         }
+                        fresh.with_fresh(x, |fresh, _| print(PI_P, b, f, fresh))
                     },
                 ),
                 Term::Tσ(_, _) => todo!(),
                 Term::TΣ(_, _, _) => todo!(),
                 Term::TLet(x, a, b, c) => {
-                    fresh.freshen_and_insert_after(
-                        x.clone(),
-                        |fresh, name| -> std::fmt::Result {
-                            write!(f, "let {} : ", name)?;
+                    fresh.with_unfresh(x, |fresh, name| -> std::fmt::Result {
+                        write!(f, "let {} : ", name)?;
 
-                            print(LET_P, a, f, fresh)?;
-                            write!(f, " := ")?;
-                            print(LET_P, b, f, fresh)?;
+                        print(LET_P, a, f, fresh)?;
+                        write!(f, " := ")?;
+                        print(LET_P, b, f, fresh)?;
 
-                            writeln!(f, ";")?;
-
-                            Ok(())
-                        },
-                    )?;
+                        writeln!(f, ";")
+                    })?;
 
                     print(LET_P, c, f, fresh)
                 }
@@ -208,42 +177,32 @@ mod fresh {
             Self(names)
         }
 
-        pub fn freshen_and_insert(&mut self, name: Name) -> Name {
-            let name = self.freshen(name);
-            self.0.push(name.clone());
-            name
-        }
-
-        fn freshen(&self, name: Name) -> Name {
-            if name.deref() == "_" || !self.0.contains(&name) {
-                name
+        pub fn freshen(&self, name: &Name) -> Name {
+            if !self.0.contains(name) {
+                name.clone()
             } else {
-                self.freshen(format!("{}'", name.deref()).into_boxed_str().into())
+                self.freshen(&format!("{}'", name.deref()).into_boxed_str().into())
             }
         }
 
-        pub fn eval<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
-            let old_len = self.0.len();
+        pub fn with_fresh<T>(&mut self, name: &Name, f: impl FnOnce(&mut Self, &Name) -> T) -> T {
+            self.0.push(name.clone());
 
-            let res = f(self);
+            let res = f(self, name);
 
-            while old_len > self.0.len() {
-                self.0.pop();
-            }
+            self.0.pop();
 
             res
         }
 
-        pub fn freshen_and_insert_after<T>(
-            &mut self,
-            name: Name,
-            f: impl FnOnce(&mut Self, &Name) -> T,
-        ) -> T {
-            let name = self.freshen(name);
+        pub fn with_unfresh<T>(&mut self, name: &Name, f: impl FnOnce(&mut Self, &Name) -> T) -> T {
+            let fresh = self.freshen(name);
 
-            let res = self.eval(|this| f(this, &name));
+            self.0.push(fresh.clone());
 
-            self.0.push(name);
+            let res = f(self, &fresh);
+
+            self.0.pop();
 
             res
         }
