@@ -1,12 +1,8 @@
-use std::{
-    fmt::Debug,
-    rc::Rc,
-    sync::atomic::{AtomicUsize, Ordering},
-};
+use std::{fmt::Debug, rc::Rc};
 
 use metas::{unify, Error, MetaCxt};
 use raw::Raw;
-use term::{TPrettyPrinter, Term};
+use term::Term;
 use value::{Type, Value};
 
 pub mod metas;
@@ -21,8 +17,6 @@ mod tests;
 pub type Name = Rc<str>;
 
 pub type SourcePos = std::ops::Range<usize>;
-
-static LEVEL: AtomicUsize = AtomicUsize::new(0);
 
 type Tm = Box<Term>;
 type Ty = Box<Term>;
@@ -73,8 +67,6 @@ impl std::ops::DerefMut for Lvl {
 
 type VTy = Box<Value>;
 
-type VTm = Box<Value>;
-
 #[derive(Debug, Clone)]
 pub struct Closure(Env, Tm);
 
@@ -91,7 +83,7 @@ impl Closure {
     }
 }
 
-mod env {
+pub mod env {
     use std::{ops::Index, slice::Iter};
 
     use crate::{
@@ -287,55 +279,34 @@ impl Cxt {
 }
 
 pub fn check(metas: &mut MetaCxt, cxt: &mut Cxt, raw: Raw, ty: Type) -> Result<Term, Error> {
-    fn check_(metas: &mut MetaCxt, cxt: &mut Cxt, raw: Raw, ty: Type) -> Result<Term, Error> {
-        Ok(match (raw, ty) {
-            (Raw::RSrcPos(pos, t), a) => {
-                cxt.pos = pos;
-                check(metas, cxt, *t, a)?
-            }
-            (Raw::RLam(x, t), Value::VΠ(_, a, b)) => {
-                let b = b.eval(metas, Value::new_rigid(cxt.lvl));
-                let body = cxt.bind(x.clone(), *a, |cxt| check(metas, cxt, *t, b)).0?;
-                Term::Tλ(x, body.into())
-            }
-            (Raw::RLet(x, a, t, u), a_) => {
-                let a = check(metas, cxt, *a, Value::VU)?;
-                let va = cxt.env.eval(metas, a.clone());
-                let t = check(metas, cxt, *t, va.clone())?;
-                let vt = cxt.env.eval(metas, t.clone());
-                let u = cxt
-                    .define(x.clone(), vt, va, |cxt| check(metas, cxt, *u, a_))
-                    .0?;
-                Term::TLet(x, a.into(), t.into(), u.into())
-            }
-            (Raw::RHole, _) => metas.fresh_meta(cxt),
-            (t, expected) => {
-                let (t, inferred) = infer(metas, cxt, t)?;
-
-                unify(metas, cxt.lvl, expected, inferred)?;
-                t
-            }
-        })
-    }
-
-    match raw {
-        Raw::RSrcPos(pos, t) => {
+    Ok(match (raw, ty) {
+        (Raw::RSrcPos(pos, t), a) => {
             cxt.pos = pos;
-            check(metas, cxt, *t, ty)
+            check(metas, cxt, *t, a)?
         }
-        raw => {
-            let level = LEVEL.fetch_add(1, Ordering::Relaxed);
-            let quotation = ty.clone().quote(metas, cxt.lvl);
-            println!(
-                "{}check {raw}: {}",
-                " ".repeat(level),
-                TPrettyPrinter(cxt, &quotation)
-            );
-            let res = check_(metas, cxt, raw, ty);
-            LEVEL.swap(level, Ordering::Relaxed);
-            res
+        (Raw::RLam(x, t), Value::VΠ(_, a, b)) => {
+            let b = b.eval(metas, Value::new_rigid(cxt.lvl));
+            let body = cxt.bind(x.clone(), *a, |cxt| check(metas, cxt, *t, b)).0?;
+            Term::Tλ(x, body.into())
         }
-    }
+        (Raw::RLet(x, a, t, u), a_) => {
+            let a = check(metas, cxt, *a, Value::VU)?;
+            let va = cxt.env.eval(metas, a.clone());
+            let t = check(metas, cxt, *t, va.clone())?;
+            let vt = cxt.env.eval(metas, t.clone());
+            let u = cxt
+                .define(x.clone(), vt, va, |cxt| check(metas, cxt, *u, a_))
+                .0?;
+            Term::TLet(x, a.into(), t.into(), u.into())
+        }
+        (Raw::RHole, _) => metas.fresh_meta(cxt),
+        (t, expected) => {
+            let (t, inferred) = infer(metas, cxt, t)?;
+
+            unify(metas, cxt.lvl, expected, inferred)?;
+            t
+        }
+    })
 }
 
 pub fn close_val(metas: &mut MetaCxt, cxt: &Cxt, val: Value) -> Closure {
@@ -346,131 +317,108 @@ pub fn close_val(metas: &mut MetaCxt, cxt: &Cxt, val: Value) -> Closure {
 }
 
 pub fn infer(metas: &mut MetaCxt, cxt: &mut Cxt, raw: Raw) -> Result<(Term, Type), Error> {
-    fn infer_(metas: &mut MetaCxt, cxt: &mut Cxt, raw: Raw) -> Result<(Term, Type), Error> {
-        Ok(match raw {
-            Raw::RVar(x) => {
-                let mut res = Err(());
-                for (ix, (x_, r#type)) in cxt.types.iter().rev().enumerate() {
-                    if &x == x_ {
-                        res = Ok((Term::TV(Ix(ix)), r#type.clone()));
-                        break;
-                    }
-                }
-                match res {
-                    Ok(res) => res,
-                    Err(_) => panic!("unbound variable {x}"),
+    Ok(match raw {
+        Raw::RVar(x) => {
+            let mut res = Err(());
+            for (ix, (x_, r#type)) in cxt.types.iter().rev().enumerate() {
+                if &x == x_ {
+                    res = Ok((Term::TV(Ix(ix)), r#type.clone()));
+                    break;
                 }
             }
-            Raw::RLam(mut x, t) => {
-                let mut a = {
-                    let m = metas.fresh_meta(cxt);
-                    cxt.env.eval(metas, m)
-                };
-
-                let (t, b) = {
-                    let (res, (x_, a_)) = cxt.bind(x, a, |cxt| infer(metas, cxt, *t));
-                    (x, a) = (x_, a_);
-                    res?
-                };
-
-                (
-                    Term::Tλ(x.clone(), t.into()),
-                    Type::VΠ(x, a.into(), close_val(metas, cxt, b)),
-                )
+            match res {
+                Ok(res) => res,
+                Err(_) => panic!("unbound variable {x}"),
             }
-            Raw::RApp(t, u) => {
-                let (t, tty) = infer(metas, cxt, *t)?;
-                let (a, b) = match metas.force(tty) {
-                    Value::VΠ(_, a, b) => (*a, b),
-                    tty => {
-                        let mut a = {
-                            let m = metas.fresh_meta(cxt);
-                            cxt.env.eval(metas, m)
-                        };
-                        let (x, b) = {
-                            let (m, (x, a_)) = cxt.bind("a".into(), a, |cxt| metas.fresh_meta(cxt));
-                            a = a_;
-                            (x, Closure::new(cxt.env.clone(), Box::new(m)))
-                        };
+        }
+        Raw::RLam(mut x, t) => {
+            let mut a = {
+                let m = metas.fresh_meta(cxt);
+                cxt.env.eval(metas, m)
+            };
 
-                        unify(
-                            metas,
-                            cxt.lvl,
-                            Value::VΠ(x, a.clone().into(), b.clone()),
-                            tty,
-                        )?;
-                        (a, b)
-                    }
-                };
-                let u = check(metas, cxt, *u, a)?;
+            let (t, b) = {
+                let (res, (x_, a_)) = cxt.bind(x, a, |cxt| infer(metas, cxt, *t));
+                (x, a) = (x_, a_);
+                res?
+            };
 
-                let ty = {
-                    let ty = cxt.env.eval(metas, u.clone());
-                    b.eval(metas, ty)
-                };
+            (
+                Term::Tλ(x.clone(), t.into()),
+                Type::VΠ(x, a.into(), close_val(metas, cxt, b)),
+            )
+        }
+        Raw::RApp(t, u) => {
+            let (t, tty) = infer(metas, cxt, *t)?;
+            let (a, b) = match metas.force(tty) {
+                Value::VΠ(_, a, b) => (*a, b),
+                tty => {
+                    let mut a = {
+                        let m = metas.fresh_meta(cxt);
+                        cxt.env.eval(metas, m)
+                    };
+                    let (x, b) = {
+                        let (m, (x, a_)) = cxt.bind("a".into(), a, |cxt| metas.fresh_meta(cxt));
+                        a = a_;
+                        (x, Closure::new(cxt.env.clone(), Box::new(m)))
+                    };
 
-                (Term::TApp(t.into(), u.into()), ty)
-            }
-            Raw::RU => (Term::TU, Value::VU),
-            Raw::RPi(mut x, a, b) => {
-                let a = check(metas, cxt, *a, Value::VU)?;
-                let b = {
-                    let va = cxt.env.eval(metas, a.clone());
-                    let (b, (x_, _)) = cxt.bind(x, va, |cxt| check(metas, cxt, *b, Value::VU));
-                    x = x_;
-                    b?
-                };
+                    unify(
+                        metas,
+                        cxt.lvl,
+                        Value::VΠ(x, a.clone().into(), b.clone()),
+                        tty,
+                    )?;
+                    (a, b)
+                }
+            };
+            let u = check(metas, cxt, *u, a)?;
 
-                (Term::TΠ(x, a.into(), b.into()), Value::VU)
-            }
-            Raw::RLet(x, a, t, u) => {
-                let a = check(metas, cxt, *a, Value::VU)?;
+            let ty = {
+                let ty = cxt.env.eval(metas, u.clone());
+                b.eval(metas, ty)
+            };
 
+            (Term::TApp(t.into(), u.into()), ty)
+        }
+        Raw::RU => (Term::TU, Value::VU),
+        Raw::RPi(mut x, a, b) => {
+            let a = check(metas, cxt, *a, Value::VU)?;
+            let b = {
                 let va = cxt.env.eval(metas, a.clone());
-                let t = check(metas, cxt, *t, va.clone())?;
+                let (b, (x_, _)) = cxt.bind(x, va, |cxt| check(metas, cxt, *b, Value::VU));
+                x = x_;
+                b?
+            };
 
-                let vt = cxt.env.eval(metas, t.clone());
-                let (u, b) = cxt
-                    .define(x.clone(), vt, va, |cxt| infer(metas, cxt, *u))
-                    .0?;
+            (Term::TΠ(x, a.into(), b.into()), Value::VU)
+        }
+        Raw::RLet(x, a, t, u) => {
+            let a = check(metas, cxt, *a, Value::VU)?;
 
-                (Term::TLet(x, a.into(), t.into(), u.into()), b)
-            }
-            Raw::RSrcPos(pos, t) => {
-                cxt.pos = pos;
-                infer(metas, cxt, *t)?
-            }
-            Raw::RHole => {
-                let a = {
-                    let m = metas.fresh_meta(cxt);
-                    cxt.env.eval(metas, m)
-                };
-                let t = metas.fresh_meta(cxt);
-                (t, a)
-            }
-        })
-    }
+            let va = cxt.env.eval(metas, a.clone());
+            let t = check(metas, cxt, *t, va.clone())?;
 
-    match raw {
-        Raw::RSrcPos(pos, raw) => {
+            let vt = cxt.env.eval(metas, t.clone());
+            let (u, b) = cxt
+                .define(x.clone(), vt, va, |cxt| infer(metas, cxt, *u))
+                .0?;
+
+            (Term::TLet(x, a.into(), t.into(), u.into()), b)
+        }
+        Raw::RSrcPos(pos, t) => {
             cxt.pos = pos;
-            infer(metas, cxt, *raw)
+            infer(metas, cxt, *t)?
         }
-        raw => {
-            let level = LEVEL.fetch_add(1, Ordering::Relaxed);
-            println!("{}infer {}", " ".repeat(level), &raw);
-            let res = infer_(metas, cxt, raw);
-            LEVEL.swap(level, Ordering::Relaxed);
-
-            if let Ok((term, value)) = &res {
-                let quotation = value.clone().quote(metas, cxt.lvl);
-                print!("{}|- {}: ", " ".repeat(level), TPrettyPrinter(cxt, term));
-                println!("{}", TPrettyPrinter(cxt, &quotation));
-            }
-
-            res
+        Raw::RHole => {
+            let a = {
+                let m = metas.fresh_meta(cxt);
+                cxt.env.eval(metas, m)
+            };
+            let t = metas.fresh_meta(cxt);
+            (t, a)
         }
-    }
+    })
 }
 
 pub fn normal_form(env: &mut Env, metas: &mut MetaCxt, term: Term) -> Term {
