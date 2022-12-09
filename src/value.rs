@@ -1,6 +1,6 @@
 use crate::{
     metas::{MetaCxt, MetaVar},
-    Closure, Lvl, Name, Term, VTm, VTy,
+    Closure, Lvl, Name, Term, VTy,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -51,10 +51,6 @@ pub enum Value {
     Vλ(Name, Closure),
     // pi type
     VΠ(Name, VTy, Closure),
-    // sigma type
-    VΣ(Name, VTy, Closure),
-    // pair
-    Vσ(VTm, VTm),
     // universe
     VU,
 }
@@ -88,8 +84,6 @@ impl Value {
 
                 Term::TΠ(x, a.into(), b.into())
             }
-            Value::VΣ(_, _, _) => todo!(),
-            Value::Vσ(_, _) => todo!(),
             Value::VU => Term::TU,
         }
     }

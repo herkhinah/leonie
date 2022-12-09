@@ -7,8 +7,6 @@ pub enum Term {
     TV(Ix),
     Tλ(Name, Tm),
     TΠ(Name, Ty, Ty),
-    Tσ(Tm, Tm),
-    TΣ(Name, Ty, Ty),
     TLet(Name, Ty, Tm, Tm),
     TMeta(MetaVar),
     TInsertedMeta(MetaVar, Vec<BD>),
@@ -98,8 +96,6 @@ impl<'a> std::fmt::Display for TPrettyPrinter<'a> {
                         fresh.with_fresh(x, |fresh, _| print(PI_P, b, f, fresh))
                     },
                 ),
-                Term::Tσ(_, _) => todo!(),
-                Term::TΣ(_, _, _) => todo!(),
                 Term::TLet(x, a, b, c) => {
                     fresh.with_unfresh(x, |fresh, name| -> std::fmt::Result {
                         write!(f, "let {} : ", name)?;

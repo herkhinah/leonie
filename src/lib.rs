@@ -131,16 +131,6 @@ mod env {
 
                     Value::VΠ(x, a.into(), Closure::new(self.clone(), b))
                 }
-                Term::Tσ(a, b) => {
-                    let a = self.eval(metas, *a);
-                    let b = self.eval(metas, *b);
-
-                    Value::Vσ(a.into(), b.into())
-                }
-                Term::TΣ(name, a, b) => {
-                    let a = self.eval(metas, *a);
-                    Value::VΣ(name, a.into(), Closure::new(self.clone(), b))
-                }
                 Term::TLet(_, _, t, u) => {
                     let value = self.eval(metas, *t);
 

@@ -152,8 +152,6 @@ impl PartialRenaming {
 
                 Ok(Term::TΠ(x, a.into(), b.into()))
             }
-            Value::VΣ(_, _, _) => todo!(),
-            Value::Vσ(_, _) => todo!(),
             Value::VU => Ok(Term::TU),
         }
     }
