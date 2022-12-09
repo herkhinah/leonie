@@ -17,7 +17,7 @@ in
     cat <<EOF > .vscode/settings.json
     {
       "rust-analyzer.cargo.sysroot": "${toolchain.toolchain}",
-      "rust-analyzer.server.path": "${fenix.rust-analyzer}/bin/rust-analyzer",
+      "rust-analyzer.server.path": "${fenix.rust-analyzer}/bin/rust-analyzer"
     }
     EOF
   '';
