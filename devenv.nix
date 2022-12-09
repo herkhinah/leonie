@@ -31,6 +31,14 @@ in
     hooks = {
       clippy.enable = true;
       rustfmt.enable = true;
+
+      cargo-test = {
+        enable = true;
+        name = "cargo-test";
+        description = "run tests via cargo test";
+        entry = "${toolchain.cargo}/bin/cargo test";
+        types = ["rust"];
+      };
     };
   };
 }
