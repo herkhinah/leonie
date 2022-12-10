@@ -4,7 +4,7 @@ let
   toolchain = fenix.stable;
 in 
 {
-  packages = [ toolchain.toolchain fenix.rust-analyzer ];
+  packages = [ toolchain.toolchain fenix.rust-analyzer pkgs.cargo-llvm-cov ];
 
   enterShell = ''
     vscode-settings
@@ -33,11 +33,33 @@ in
       rustfmt.enable = true;
 
       cargo-test = {
-        enable = true;
+        enable = false;
         name = "cargo-test";
         description = "run tests via cargo test";
         entry = "${toolchain.cargo}/bin/cargo test";
         types = ["rust"];
+        pass_filenames = false;
+      };
+      
+      cargo-llvm-cov = 
+        let
+          wrapper = pkgs.symlinkJoin {
+            name = "cargo-llvm-cov-wrapped";
+            paths = [ pkgs.cargo-llvm-cov ];
+            nativeBuildInputs = [ pkgs.makeWrapper ];
+            postBuild = ''
+              wrapProgram $out/bin/cargo-llvm-cov \
+                --prefix PATH : ${lib.makeBinPath [ pkgs.cargo-llvm-cov ]}
+            '';
+          };
+      in
+      {
+        enable = true;
+        name = "cargo llvm-cov";
+        description = "run coverage test via llvm-cov";
+        entry = "${wrapper}/bin/cargo-llvm-cov llvm-cov --open";
+        types = ["rust"];
+        pass_filenames = false;
       };
     };
   };
