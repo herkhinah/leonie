@@ -1,35 +1,10 @@
-use std::backtrace::Backtrace;
 use std::collections::HashMap as Map;
 
 use crate::{
+    error::{Error, ErrorKind},
     value::{Spine, Value},
     Cxt, Env, Lvl, Term,
 };
-
-#[derive(Debug)]
-pub struct Error {
-    pub backtrace: Backtrace,
-    pub kind: ErrorKind,
-}
-
-#[derive(Debug, Clone)]
-pub enum ErrorKind {
-    MetaOccurs(MetaVar, Value),
-    MetaScope(MetaVar, Value),
-    MetaSpine(Spine, Spine),
-    MetaInvert(Spine),
-    MetaUnify(Value, Value),
-    InferUnbound(),
-}
-
-macro_rules! error {
-    ($error_kind:expr) => {
-        Err(Error {
-            backtrace: Backtrace::capture(),
-            kind: $error_kind,
-        })
-    };
-}
 
 #[derive(Debug, Clone)]
 pub enum MetaEntry {
@@ -116,7 +91,7 @@ impl PartialRenaming {
                 Value::VRigid(x, y) if !ren.contains_key(&x) && y.is_empty() => {
                     ren.insert(x, Lvl(dom));
                 }
-                _ => return error!(ErrorKind::MetaInvert(spine)),
+                _ => return Err(error!(ErrorKind::MetaInvert(spine))),
             }
         }
 
@@ -131,14 +106,14 @@ impl PartialRenaming {
         match metas.force(v) {
             Value::VFlex(m_, sp) => {
                 if m == m_ {
-                    return error!(ErrorKind::MetaOccurs(m, Value::VFlex(m_, sp)));
+                    return Err(error!(ErrorKind::MetaOccurs(m, Value::VFlex(m_, sp))));
                 }
 
                 self.go_sp(metas, m, Term::TMeta(m_), sp)
             }
             Value::VRigid(x, sp) => match self.ren.get(&x) {
                 Some(x_) => self.go_sp(metas, m, Term::TV(x_.as_index(self.dom)), sp),
-                None => error!(ErrorKind::MetaScope(m, Value::VRigid(x, sp))),
+                None => Err(error!(ErrorKind::MetaScope(m, Value::VRigid(x, sp)))),
             },
             Value::Vλ(x, t) => {
                 let t = t.eval(metas, Value::new_rigid(self.cod));
@@ -186,7 +161,7 @@ impl PartialRenaming {
 
 pub fn unify_sp(mcxt: &mut MetaCxt, lvl: Lvl, sp: Spine, sp_: Spine) -> Result<(), Error> {
     if sp.len() != sp_.len() {
-        return error!(ErrorKind::MetaSpine(sp, sp_));
+        return Err(error!(ErrorKind::MetaSpine(sp, sp_)));
     }
 
     for (t, t_) in sp.into_iter().zip(sp_.into_iter()) {
@@ -230,9 +205,7 @@ pub fn unify(mcxt: &mut MetaCxt, lvl: Lvl, l: Value, r: Value) -> Result<(), Err
         (Value::VFlex(m, sp), Value::VFlex(m_, sp_)) if m == m_ => unify_sp(mcxt, lvl, sp, sp_),
         (Value::VFlex(m, sp), t_) => solve(mcxt, lvl, m, sp, t_),
         (t, Value::VFlex(m_, sp_)) => solve(mcxt, lvl, m_, sp_, t),
-        (l, r) => {
-            error!(ErrorKind::MetaUnify(l, r))
-        }
+        (l, r) => Err(error!(ErrorKind::MetaUnify(l, r))),
     }
 }
 

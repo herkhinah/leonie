@@ -1,10 +1,13 @@
 use std::{fmt::Debug, rc::Rc};
 
-use metas::{unify, Error, MetaCxt};
+use error::{Error, ErrorKind};
+use metas::{unify, MetaCxt};
 use raw::Raw;
 use term::Term;
 use value::{Type, Value};
 
+#[macro_use]
+pub mod error;
 pub mod metas;
 pub mod parser;
 pub mod raw;
@@ -343,10 +346,8 @@ pub fn infer(metas: &mut MetaCxt, cxt: &mut Cxt, raw: Raw) -> Result<(Term, Type
                     break;
                 }
             }
-            match result {
-                Ok(res) => res,
-                Err(_) => panic!("unbound variable {var}"),
-            }
+
+            result.map_err(|_| error!(ErrorKind::Unbound))?
         }
         Raw::RLam(mut var, term) => {
             let mut inferred_domain = {
