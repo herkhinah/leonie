@@ -4,7 +4,7 @@ let
   toolchain = fenix.stable;
 in 
 {
-  packages = [ toolchain.toolchain fenix.rust-analyzer pkgs.cargo-llvm-cov ];
+  packages = [ toolchain.toolchain fenix.rust-analyzer pkgs.cargo-llvm-cov pkgs.cargo-edit pkgs.helix ];
 
   enterShell = ''
     vscode-settings
@@ -58,8 +58,9 @@ in
         name = "cargo llvm-cov";
         description = "run coverage test via llvm-cov";
         entry = "${wrapper}/bin/cargo-llvm-cov llvm-cov --open";
-        types = ["rust"];
+        files = "(\\.rs$)|(^Cargo\\.toml$)|(^Cargo\\.lock$)";
         pass_filenames = false;
+	stages = [ "push" ];
       };
     };
   };
