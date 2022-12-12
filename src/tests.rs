@@ -4,7 +4,7 @@ use crate::{
     env::Env, infer, metas::MetaCxt, normal_form, parser::parse, term::TPrettyPrinter, Cxt,
 };
 
-const test0: &'static str = r#"
+const TEST0: &'static str = r#"
 let id : (A : _) -> A -> A := λ A x. x
 let List : U -> U := λ A. (L : _) -> (A -> L -> L) -> L -> L
 let nil : (A : _) -> List A := λ A L cons nil. nil
@@ -40,102 +40,102 @@ fn normal_forms() -> Result<(), ()> {
             "(A : U) → A → A",
         ),
         (
-            concatcp!(test0, "id\n"),
+            concatcp!(TEST0, "id\n"),
             "λ A x. x",
             "(A : U) → A → A",
         ),
         (
-            concatcp!(test0, "List"),
+            concatcp!(TEST0, "List"),
             "λ A. (L : U) → (A → L → L) → L → L",
             "U → U",
         ),
         (
-            concatcp!(test0, "nil"),
+            concatcp!(TEST0, "nil"),
             "λ A L cons nil. nil",
             "(A : U) → (L : U) → (A → L → L) → L → L",
         ),
         (
-            concatcp!(test0, "cons"),
+            concatcp!(TEST0, "cons"),
             "λ A x xs L cons nil. cons x (xs L cons nil)",
             "(A : U) → A → ((L : U) → (A → L → L) → L → L) → (L : U) → (A → L → L) → L → L",
         ),
         (
-            concatcp!(test0, "Bool"),
+            concatcp!(TEST0, "Bool"),
             "(B : U) → B → B → B",
             "U",
         ),
         (
-            concatcp!(test0, "true"),
+            concatcp!(TEST0, "true"),
             "λ B t f. t",
             "(B : U) → B → B → B",
         ),
         (
-            concatcp!(test0, "false"),
+            concatcp!(TEST0, "false"),
             "λ B t f. f",
             "(B : U) → B → B → B",
         ),
         (
-            concatcp!(test0, "not"),
+            concatcp!(TEST0, "not"),
             "λ b B t f. b B f t",
             "((B : U) → B → B → B) → (B : U) → B → B → B",
         ),
         (
-            concatcp!(test0, "list1"),
+            concatcp!(TEST0, "list1"),
             "λ L cons nil. cons (λ B t f. t) (cons (λ B t f. f) nil)",
             "(L : U) → (((B : U) → B → B → B) → L → L) → L → L",
         ),
         (
-            concatcp!(test0, "Eq"),
+            concatcp!(TEST0, "Eq"),
             "λ A x y. (P : A → U) → P x → P y",
             "(A : U) → A → A → U",
         ),
         (
-            concatcp!(test0, "refl"),
+            concatcp!(TEST0, "refl"),
             "λ A x P px. px",
             "(A : U) → (x : A) → (P : A → U) → P x → P x",
         ),
         (
-            concatcp!(test0, "list1"),
+            concatcp!(TEST0, "list1"),
             "λ L cons nil. cons (λ B t f. t) (cons (λ B t f. f) nil)",
             "(L : U) → (((B : U) → B → B → B) → L → L) → L → L",
         ),
         (
-            concatcp!(test0, "Nat"),
+            concatcp!(TEST0, "Nat"),
             "(N : U) → (N → N) → N → N",
             "U",
         ),
         (
-            concatcp!(test0, "five"),
+            concatcp!(TEST0, "five"),
             "λ N s z. s (s (s (s (s z))))",
             "(N : U) → (N → N) → N → N",
         ),
         (
-            concatcp!(test0, "add"),
+            concatcp!(TEST0, "add"),
             "λ a b N s z. a N s (b N s z)",
             "((N : U) → (N → N) → N → N) → ((N : U) → (N → N) → N → N) → (N : U) → (N → N) → N → N",
         ),
         (
-            concatcp!(test0, "mul"),
+            concatcp!(TEST0, "mul"),
             "λ a b N s z. a N (b N s) z",
             "((N : U) → (N → N) → N → N) → ((N : U) → (N → N) → N → N) → (N : U) → (N → N) → N → N",
         ),
         (
-            concatcp!(test0, "ten"),
+            concatcp!(TEST0, "ten"),
             "λ N s z. s (s (s (s (s (s (s (s (s (s z)))))))))",
             "(N : U) → (N → N) → N → N",
         ),
         (
-            concatcp!(test0, "hundred"),
+            concatcp!(TEST0, "hundred"),
             "λ N s z. s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s z)))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))",
             "(N : U) → (N → N) → N → N",
         ),
         (
-            concatcp!(test0, "thousand"),
+            concatcp!(TEST0, "thousand"),
             "λ N s z. s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s z)))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))",
             "(N : U) → (N → N) → N → N",
         ),
         (
-            concatcp!(test0, "eqTest"),
+            concatcp!(TEST0, "eqTest"),
             "λ P px. px",
             "(P : ((N : U) → (N → N) → N → N) → U) → P (λ N s z. s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s z)))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))) → P (λ N s z. s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s (s z))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))",
         ),
