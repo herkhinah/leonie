@@ -1,8 +1,6 @@
 use const_format::concatcp;
 
-use crate::{
-    env::Env, infer, metas::MetaCxt, normal_form, parser::parse, term::TPrettyPrinter, Cxt,
-};
+use crate::{parser::parse, term::TPrettyPrinter, Cxt};
 
 const TEST0: &'static str = r#"
 let id : (A : _) -> A -> A := λ A x. x
@@ -149,21 +147,22 @@ fn normal_forms() -> Result<(), ()> {
             })
             .unwrap()
             .unwrap();
-        let (mut metas, mut cxt) = (MetaCxt::default(), Cxt::default());
+        let mut cxt = Cxt::default();
 
-        let (term, ty) = infer(&mut metas, &mut cxt, raw).map_err(|_| ()).unwrap();
+        let (term, ty) = cxt.infer(raw).map_err(|_| ()).unwrap();
 
         let nf_term = format!(
             "{}",
-            TPrettyPrinter(
-                &Cxt::default(),
-                &normal_form(&mut Env::default(), &mut metas, term)
-            )
+            TPrettyPrinter(&Cxt::default(), &cxt.normal_form(term))
         );
 
         assert_eq!(nf_term, expected_nf_term);
+        let lvl = cxt.lvl();
 
-        let nf_type = format!("{}", TPrettyPrinter(&cxt, &ty.quote(&mut metas, cxt.lvl())));
+        let nf_type = format!(
+            "{}",
+            TPrettyPrinter(&Cxt::default(), &ty.quote(&mut cxt.metas, lvl))
+        );
 
         assert_eq!(nf_type, expected_nf_type);
     }

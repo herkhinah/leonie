@@ -72,13 +72,13 @@ impl Value {
             Value::VFlex(m, sp) => sp.quote(metas, lvl, Term::TMeta(m)),
             Value::VRigid(x, sp) => sp.quote(metas, lvl, Term::TV(x.as_index(lvl))),
             Value::Vλ(x, clos) => {
-                let val = clos.eval(metas, Value::new_rigid(lvl));
+                let val = clos.eval(Value::new_rigid(lvl), metas);
                 Term::Tλ(x, val.quote(metas, lvl.inc()).into())
             }
             Value::VΠ(x, a, clos) => {
                 let a = a.quote(metas, lvl);
 
-                let b = clos.eval(metas, Value::new_rigid(lvl));
+                let b = clos.eval(Value::new_rigid(lvl), metas);
 
                 let b = b.quote(metas, lvl.inc());
 
@@ -98,7 +98,7 @@ impl Value {
                 sp.push(value);
                 Value::VRigid(x, sp)
             }
-            Value::Vλ(_, clos) => clos.eval(metas, value),
+            Value::Vλ(_, clos) => clos.eval(value, metas),
             _ => panic!(),
         }
     }

@@ -1,8 +1,6 @@
 use std::io::Read;
 
-use leonie::{
-    env::Env, infer, metas::MetaCxt, normal_form, parser::parse, term::TPrettyPrinter, Cxt,
-};
+use leonie::{parser::parse, term::TPrettyPrinter, Cxt};
 
 fn main() -> Result<(), ()> {
     let mut input = String::new();
@@ -13,12 +11,12 @@ fn main() -> Result<(), ()> {
     }
 
     if let Ok(Some(raw)) = parse(&input) {
-        let mut metas = MetaCxt::default();
         let mut cxt = Cxt::default();
 
-        if let Ok((term, ty)) = infer(&mut metas, &mut cxt, raw) {
-            let nf_term = normal_form(&mut Env::default(), &mut metas, term);
-            let nf_type = ty.quote(&mut metas, cxt.lvl());
+        if let Ok((term, ty)) = cxt.infer(raw) {
+            let nf_term = cxt.normal_form(term);
+            let lvl = cxt.lvl();
+            let nf_type = ty.quote(&mut cxt.metas, lvl);
 
             println!(
                 "{}\n  :\n{}",

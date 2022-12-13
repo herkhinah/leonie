@@ -3,7 +3,7 @@ use std::collections::HashMap as Map;
 use crate::{
     error::{Error, ErrorKind},
     value::{Spine, Value},
-    Cxt, Env, Lvl, Term,
+    Env, Lvl, Term, BD,
 };
 
 #[derive(Debug, Clone)]
@@ -32,10 +32,10 @@ impl std::ops::IndexMut<MetaVar> for MetaCxt {
 }
 
 impl MetaCxt {
-    pub fn fresh_meta(&mut self, cxt: &Cxt) -> Term {
+    pub fn fresh_meta(&mut self, bds: &[BD]) -> Term {
         let m = self.0.len();
         self.0.push(MetaEntry::Unsolved);
-        Term::TInsertedMeta(m, cxt.bds.clone())
+        Term::TInsertedMeta(m, bds.to_vec())
     }
 
     pub fn force(&mut self, v: Value) -> Value {
@@ -116,13 +116,13 @@ impl PartialRenaming {
                 None => Err(error!(ErrorKind::MetaScope(m, Value::VRigid(x, sp)))),
             },
             Value::Vλ(x, t) => {
-                let t = t.eval(metas, Value::new_rigid(self.cod));
+                let t = t.eval(Value::new_rigid(self.cod), metas);
                 let t = self.lift(|pren| pren.go(metas, m, t))?;
                 Ok(Term::Tλ(x, t.into()))
             }
             Value::VΠ(x, a, b) => {
                 let a = self.go(metas, m, *a)?;
-                let b = b.eval(metas, Value::new_rigid(self.cod));
+                let b = b.eval(Value::new_rigid(self.cod), metas);
                 let b = self.lift(|pren| pren.go(metas, m, b))?;
 
                 Ok(Term::TΠ(x, a.into(), b.into()))
@@ -178,27 +178,27 @@ pub fn unify(mcxt: &mut MetaCxt, lvl: Lvl, l: Value, r: Value) -> Result<(), Err
     match (l, r) {
         (Value::VU, Value::VU) => Ok(()),
         (Value::Vλ(_, t), Value::Vλ(_, t_)) => {
-            let a = t.eval(mcxt, Value::new_rigid(lvl));
-            let b = t_.eval(mcxt, Value::new_rigid(lvl));
+            let a = t.eval(Value::new_rigid(lvl), mcxt);
+            let b = t_.eval(Value::new_rigid(lvl), mcxt);
 
             unify(mcxt, lvl.inc(), a, b)
         }
         (t, Value::Vλ(_, t_)) => {
             let a = t.app(mcxt, Value::new_rigid(lvl));
-            let b = t_.eval(mcxt, Value::new_rigid(lvl));
+            let b = t_.eval(Value::new_rigid(lvl), mcxt);
 
             unify(mcxt, lvl.inc(), a, b)
         }
         (Value::Vλ(_, t), t_) => {
-            let a = t.eval(mcxt, Value::new_rigid(lvl));
+            let a = t.eval(Value::new_rigid(lvl), mcxt);
             let b = t_.app(mcxt, Value::new_rigid(lvl));
 
             unify(mcxt, lvl.inc(), a, b)
         }
         (Value::VΠ(_, a, b), Value::VΠ(_, a_, b_)) => {
             unify(mcxt, lvl, *a, *a_)?;
-            let b = b.eval(mcxt, Value::new_rigid(lvl));
-            let b_ = b_.eval(mcxt, Value::new_rigid(lvl));
+            let b = b.eval(Value::new_rigid(lvl), mcxt);
+            let b_ = b_.eval(Value::new_rigid(lvl), mcxt);
             unify(mcxt, lvl.inc(), b, b_)
         }
         (Value::VRigid(x, sp), Value::VRigid(x_, sp_)) if x == x_ => unify_sp(mcxt, lvl, sp, sp_),

@@ -78,7 +78,7 @@ impl Closure {
         Closure(env, term)
     }
 
-    pub fn eval(self, metas: &mut MetaCxt, v: Value) -> Value {
+    pub fn eval(self, v: Value, metas: &mut MetaCxt) -> Value {
         let Closure(mut env, t) = self;
         env.push(v);
 
@@ -215,6 +215,8 @@ pub struct Cxt {
     bds: Vec<BD>,
     /// used for error reporting
     pos: SourcePos,
+
+    pub metas: MetaCxt,
 }
 
 impl Cxt {
@@ -280,191 +282,201 @@ impl Cxt {
 
         (var_name, var_type, value)
     }
-}
 
-pub fn check(
-    metas: &mut MetaCxt,
-    cxt: &mut Cxt,
-    raw: Raw,
-    expected_type: Type,
-) -> Result<Term, Error> {
-    Ok(match (raw, expected_type) {
-        (Raw::RSrcPos(pos, raw), expected_type) => {
-            cxt.pos = pos;
-            check(metas, cxt, *raw, expected_type)?
-        }
-        (Raw::RLam(lambda_var, lambda_body), Value::VΠ(_, domain, codomain)) => {
-            let codomain = codomain.eval(metas, Value::new_rigid(cxt.lvl));
-            let lambda_body = cxt
-                .bind(lambda_var.clone(), *domain, |cxt| {
-                    check(metas, cxt, *lambda_body, codomain)
-                })
-                .0?;
-            Term::Tλ(lambda_var, lambda_body.into())
-        }
-        (Raw::RLet(binder_name, binder_type, binder_def, scope), expected_type) => {
-            let binder_type = check(metas, cxt, *binder_type, Value::VU)?;
-            let v_binder_type = cxt.env.eval(metas, binder_type.clone());
-            let binder_def = check(metas, cxt, *binder_def, v_binder_type.clone())?;
-            let v_binder_def = cxt.env.eval(metas, binder_def.clone());
-            let scope = cxt
-                .define(binder_name.clone(), v_binder_def, v_binder_type, |cxt| {
-                    check(metas, cxt, *scope, expected_type)
-                })
-                .0?;
-            Term::TLet(
-                binder_name,
-                binder_type.into(),
-                binder_def.into(),
-                scope.into(),
-            )
-        }
-        (Raw::RHole, _) => metas.fresh_meta(cxt),
-        (raw, expected_type) => {
-            let (t, inferred_type) = infer(metas, cxt, raw)?;
-
-            unify(metas, cxt.lvl, expected_type, inferred_type)?;
-            t
-        }
-    })
-}
-
-pub fn close_val(metas: &mut MetaCxt, cxt: &Cxt, value: Value) -> Closure {
-    let lvl = cxt.lvl;
-    let env = cxt.env.clone();
-    let quoted_term = value.quote(metas, lvl.inc());
-    Closure::new(env, quoted_term.into())
-}
-
-pub fn infer(metas: &mut MetaCxt, cxt: &mut Cxt, raw: Raw) -> Result<(Term, Type), Error> {
-    Ok(match raw {
-        Raw::RVar(var) => {
-            let mut result = Err(());
-            for (ix, (var_, r#type)) in cxt.types.iter().rev().enumerate() {
-                if &var == var_ {
-                    result = Ok((Term::TV(Ix(ix)), r#type.clone()));
-                    break;
-                }
+    pub fn check(&mut self, raw: Raw, expected_type: Type) -> Result<Term, Error> {
+        Ok(match (raw, expected_type) {
+            (Raw::RSrcPos(pos, raw), expected_type) => {
+                self.pos = pos;
+                self.check(*raw, expected_type)?
             }
-
-            result.map_err(|_| error!(ErrorKind::Unbound))?
-        }
-        Raw::RLam(mut var, term) => {
-            let mut inferred_domain = {
-                let meta_domain = metas.fresh_meta(cxt);
-                cxt.env.eval(metas, meta_domain)
-            };
-
-            let (term, inferred_codomain) = {
-                let (infer_result, (var_, inferred_domain_)) =
-                    cxt.bind(var, inferred_domain, |cxt| infer(metas, cxt, *term));
-                (var, inferred_domain) = (var_, inferred_domain_);
-                infer_result?
-            };
-
-            (
-                Term::Tλ(var.clone(), term.into()),
-                Type::VΠ(
-                    var,
-                    inferred_domain.into(),
-                    close_val(metas, cxt, inferred_codomain),
-                ),
-            )
-        }
-        Raw::RApp(rator, rand) => {
-            let (rator, inferred_rator) = infer(metas, cxt, *rator)?;
-            let (inferred_rator_domain, inferred_rator_codomain) = match metas.force(inferred_rator)
-            {
-                Value::VΠ(_, rator_domain, rator_codomain) => (*rator_domain, rator_codomain),
-                inferred_rator => {
-                    let mut meta_domain = {
-                        let meta_domain = metas.fresh_meta(cxt);
-                        cxt.env.eval(metas, meta_domain)
-                    };
-                    let (x, meta_codomain) = {
-                        let (meta_codomain, (var_domain, meta_domain_)) =
-                            cxt.bind("a".into(), meta_domain, |cxt| metas.fresh_meta(cxt));
-                        meta_domain = meta_domain_;
-                        (
-                            var_domain,
-                            Closure::new(cxt.env.clone(), Box::new(meta_codomain)),
-                        )
-                    };
-
-                    unify(
-                        metas,
-                        cxt.lvl,
-                        Value::VΠ(x, meta_domain.clone().into(), meta_codomain.clone()),
-                        inferred_rator,
-                    )?;
-                    (meta_domain, meta_codomain)
-                }
-            };
-            let checked_rand = check(metas, cxt, *rand, inferred_rator_domain)?;
-
-            let inferred_type = {
-                let evaluated_rand = cxt.env.eval(metas, checked_rand.clone());
-                inferred_rator_codomain.eval(metas, evaluated_rand)
-            };
-
-            (Term::TApp(rator.into(), checked_rand.into()), inferred_type)
-        }
-        Raw::RU => (Term::TU, Value::VU),
-        Raw::RPi(mut var_domain, domain, codomain) => {
-            let checked_domain = check(metas, cxt, *domain, Value::VU)?;
-            let checked_codomain = {
-                let evaluated_domain = cxt.env.eval(metas, checked_domain.clone());
-                let (check_result, (var_domain_, _)) =
-                    cxt.bind(var_domain, evaluated_domain, |cxt| {
-                        check(metas, cxt, *codomain, Value::VU)
-                    });
-                var_domain = var_domain_;
-                check_result?
-            };
-
-            (
-                Term::TΠ(var_domain, checked_domain.into(), checked_codomain.into()),
-                Value::VU,
-            )
-        }
-        Raw::RLet(binder_name, binder_type, binder_def, scope) => {
-            let binder_type = check(metas, cxt, *binder_type, Value::VU)?;
-
-            let v_binder_type = cxt.env.eval(metas, binder_type.clone());
-            let binder_def = check(metas, cxt, *binder_def, v_binder_type.clone())?;
-
-            let v_binder_def = cxt.env.eval(metas, binder_def.clone());
-            let (scope, inferred_scope) = cxt
-                .define(binder_name.clone(), v_binder_def, v_binder_type, |cxt| {
-                    infer(metas, cxt, *scope)
-                })
-                .0?;
-
-            (
+            (Raw::RLam(lambda_var, lambda_body), Value::VΠ(_, domain, codomain)) => {
+                let codomain = codomain.eval(Value::new_rigid(self.lvl), &mut self.metas);
+                let lambda_body = self
+                    .bind(lambda_var.clone(), *domain, |cxt| {
+                        cxt.check(*lambda_body, codomain)
+                    })
+                    .0?;
+                Term::Tλ(lambda_var, lambda_body.into())
+            }
+            (Raw::RLet(binder_name, binder_type, binder_def, scope), expected_type) => {
+                let binder_type = self.check(*binder_type, Value::VU)?;
+                let v_binder_type = self.env.eval(&mut self.metas, binder_type.clone());
+                let binder_def = self.check(*binder_def, v_binder_type.clone())?;
+                let v_binder_def = self.env.eval(&mut self.metas, binder_def.clone());
+                let scope = self
+                    .define(binder_name.clone(), v_binder_def, v_binder_type, |cxt| {
+                        cxt.check(*scope, expected_type)
+                    })
+                    .0?;
                 Term::TLet(
                     binder_name,
                     binder_type.into(),
                     binder_def.into(),
                     scope.into(),
-                ),
-                inferred_scope,
-            )
-        }
-        Raw::RSrcPos(pos, t) => {
-            cxt.pos = pos;
-            infer(metas, cxt, *t)?
-        }
-        Raw::RHole => {
-            let hole_type = {
-                let m = metas.fresh_meta(cxt);
-                cxt.env.eval(metas, m)
-            };
-            let hole = metas.fresh_meta(cxt);
-            (hole, hole_type)
-        }
-    })
-}
+                )
+            }
+            (Raw::RHole, _) => self.fresh_meta(),
+            (raw, expected_type) => {
+                let (t, inferred_type) = self.infer(raw)?;
 
-pub fn normal_form(env: &mut Env, metas: &mut MetaCxt, term: Term) -> Term {
-    env.eval(metas, term).quote(metas, env.level())
+                unify(&mut self.metas, self.lvl, expected_type, inferred_type)?;
+                t
+            }
+        })
+    }
+
+    pub fn close_val(&mut self, value: Value) -> Closure {
+        let lvl = self.lvl;
+        let env = self.env.clone();
+        let quoted_term = value.quote(&mut self.metas, lvl.inc());
+        Closure::new(env, quoted_term.into())
+    }
+
+    pub fn infer(&mut self, raw: Raw) -> Result<(Term, Type), Error> {
+        Ok(match raw {
+            Raw::RVar(var) => {
+                let mut result = Err(());
+                for (ix, (var_, r#type)) in self.types.iter().rev().enumerate() {
+                    if &var == var_ {
+                        result = Ok((Term::TV(Ix(ix)), r#type.clone()));
+                        break;
+                    }
+                }
+
+                result.map_err(|_| error!(ErrorKind::Unbound))?
+            }
+            Raw::RLam(mut var, term) => {
+                let mut inferred_domain = {
+                    let meta_domain = self.fresh_meta();
+                    self.eval(meta_domain)
+                };
+
+                let (term, inferred_codomain) = {
+                    let (infer_result, (var_, inferred_domain_)) =
+                        self.bind(var, inferred_domain, |cxt| cxt.infer(*term));
+                    (var, inferred_domain) = (var_, inferred_domain_);
+                    infer_result?
+                };
+
+                (
+                    Term::Tλ(var.clone(), term.into()),
+                    Type::VΠ(
+                        var,
+                        inferred_domain.into(),
+                        self.close_val(inferred_codomain),
+                    ),
+                )
+            }
+            Raw::RApp(rator, rand) => {
+                let (rator, inferred_rator) = self.infer(*rator)?;
+                let (inferred_rator_domain, inferred_rator_codomain) = match self
+                    .metas
+                    .force(inferred_rator)
+                {
+                    Value::VΠ(_, rator_domain, rator_codomain) => (*rator_domain, rator_codomain),
+                    inferred_rator => {
+                        let mut meta_domain = {
+                            let meta_domain = self.fresh_meta();
+                            self.eval(meta_domain)
+                        };
+                        let (x, meta_codomain) = {
+                            let (meta_codomain, (var_domain, meta_domain_)) =
+                                self.bind("a".into(), meta_domain, |cxt| cxt.fresh_meta());
+                            meta_domain = meta_domain_;
+                            (
+                                var_domain,
+                                Closure::new(self.env.clone(), Box::new(meta_codomain)),
+                            )
+                        };
+
+                        let lvl = self.lvl;
+                        unify(
+                            &mut self.metas,
+                            lvl,
+                            Value::VΠ(x, meta_domain.clone().into(), meta_codomain.clone()),
+                            inferred_rator,
+                        )?;
+                        (meta_domain, meta_codomain)
+                    }
+                };
+                let checked_rand = self.check(*rand, inferred_rator_domain)?;
+
+                let inferred_type = {
+                    let evaluated_rand = self.eval(checked_rand.clone());
+                    inferred_rator_codomain.eval(evaluated_rand, &mut self.metas)
+                };
+
+                (Term::TApp(rator.into(), checked_rand.into()), inferred_type)
+            }
+            Raw::RU => (Term::TU, Value::VU),
+            Raw::RPi(mut var_domain, domain, codomain) => {
+                let checked_domain = self.check(*domain, Value::VU)?;
+                let checked_codomain = {
+                    let evaluated_domain = self.eval(checked_domain.clone());
+                    let (check_result, (var_domain_, _)) =
+                        self.bind(var_domain, evaluated_domain, |cxt| {
+                            cxt.check(*codomain, Value::VU)
+                        });
+                    var_domain = var_domain_;
+                    check_result?
+                };
+
+                (
+                    Term::TΠ(var_domain, checked_domain.into(), checked_codomain.into()),
+                    Value::VU,
+                )
+            }
+            Raw::RLet(binder_name, binder_type, binder_def, scope) => {
+                let binder_type = self.check(*binder_type, Value::VU)?;
+
+                let v_binder_type = self.eval(binder_type.clone());
+                let binder_def = self.check(*binder_def, v_binder_type.clone())?;
+
+                let v_binder_def = self.eval(binder_def.clone());
+                let (scope, inferred_scope) = self
+                    .define(binder_name.clone(), v_binder_def, v_binder_type, |cxt| {
+                        cxt.infer(*scope)
+                    })
+                    .0?;
+
+                (
+                    Term::TLet(
+                        binder_name,
+                        binder_type.into(),
+                        binder_def.into(),
+                        scope.into(),
+                    ),
+                    inferred_scope,
+                )
+            }
+            Raw::RSrcPos(pos, t) => {
+                self.pos = pos;
+                self.infer(*t)?
+            }
+            Raw::RHole => {
+                let hole_type = {
+                    let m = self.fresh_meta();
+                    self.eval(m)
+                };
+                let hole = self.fresh_meta();
+                (hole, hole_type)
+            }
+        })
+    }
+
+    pub fn normal_form(&mut self, term: Term) -> Term {
+        self.eval(term).quote(&mut self.metas, self.env.level())
+    }
+
+    fn eval(&mut self, term: Term) -> Value {
+        let Self { env, metas, .. } = self;
+
+        env.eval(metas, term)
+    }
+
+    fn fresh_meta(&mut self) -> Term {
+        let Self { bds, metas, .. } = self;
+
+        metas.fresh_meta(bds)
+    }
 }
