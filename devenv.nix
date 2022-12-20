@@ -1,13 +1,18 @@
 { pkgs, inputs, lib, ... }:
 let
   fenix = inputs.fenix.packages.${pkgs.system};
-  toolchain = fenix.stable;
+  toolchain = fenix.complete;
 in 
 {
-  packages = [ toolchain.toolchain fenix.rust-analyzer pkgs.cargo-llvm-cov pkgs.cargo-edit pkgs.helix ];
+  packages = [ toolchain.toolchain fenix.rust-analyzer pkgs.cargo-llvm-cov pkgs.cargo-edit pkgs.cargo-flamegraph pkgs.kakoune-cr pkgs.xplr ];
 
   enterShell = ''
+    export EDITOR=kaks
     vscode-settings
+  '';
+
+  scripts.kaks.exec = ''
+    kcr open --session=leonie --client=client0 $@
   '';
 
   scripts.vscode-settings.exec = ''
