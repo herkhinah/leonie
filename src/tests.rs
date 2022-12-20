@@ -165,7 +165,10 @@ fn normal_forms() -> Result<(), ()> {
 
         let nf_type = format!(
             "{}",
-            TPrettyPrinter(&Cxt::default(), &Rc::unwrap_or_clone(ty).quote(&mut cxt.metas, lvl))
+            TPrettyPrinter(
+                &Cxt::default(),
+                &Rc::unwrap_or_clone(ty).quote(&mut cxt.metas, lvl)
+            )
         );
 
         assert_eq!(nf_type, expected_nf_type);

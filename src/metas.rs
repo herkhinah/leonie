@@ -1,4 +1,4 @@
-use std::{collections::HashMap as Map, ops::Deref, rc::Rc};
+use std::{collections::HashMap as Map, rc::Rc};
 
 use crate::{
     error::{Error, ErrorKind},
@@ -38,14 +38,9 @@ impl MetaCxt {
         Term::TInsertedMeta(m, bds.to_vec())
     }
 
-    pub fn force(&mut self, v: Rc<Value>) -> Rc<Value> {
-        match v.deref() {
-            Value::VFlex(_, _) => {}
-            _ => return v,
-        }
-
-        if let Value::VFlex(m, sp) = Rc::<Value>::unwrap_or_clone(v) {
-            match &self[m] {
+    pub fn force(&mut self, value: Value) -> Value {
+        match value {
+            Value::VFlex(m, sp) => match &self[m] {
                 MetaEntry::Solved(v) => {
                     let mut v = v.clone();
 
@@ -53,12 +48,11 @@ impl MetaCxt {
                         v = Rc::unwrap_or_clone(v.app(self, arg.into()));
                     }
 
-                    v.into()
+                    v
                 }
-                MetaEntry::Unsolved => Value::VFlex(m, sp).into(),
-            }
-        } else {
-            panic!();
+                _ => Value::VFlex(m, sp),
+            },
+            other => other,
         }
     }
 }
@@ -93,7 +87,7 @@ impl PartialRenaming {
         let dom = spine.len();
 
         for (dom, t) in spine.iter().cloned().enumerate() {
-            match Rc::<Value>::unwrap_or_clone(metas.force(t.into())) {
+            match metas.force(t) {
                 Value::VRigid(x, y) if !ren.contains_key(&x) && y.is_empty() => {
                     ren.insert(x, Lvl(dom));
                 }
@@ -109,7 +103,7 @@ impl PartialRenaming {
     }
 
     fn go(&mut self, metas: &mut MetaCxt, m: MetaVar, v: Rc<Value>) -> Result<Term, Error> {
-        match Rc::<Value>::unwrap_or_clone(metas.force(v)) {
+        match metas.force(Rc::unwrap_or_clone(v)) {
             Value::VFlex(m_, sp) => {
                 if m == m_ {
                     return Err(error!(ErrorKind::MetaOccurs(m, Value::VFlex(m_, sp))));
@@ -139,7 +133,7 @@ impl PartialRenaming {
 
     fn go_sp(
         &mut self,
-        mcxt: &mut MetaCxt,
+        metas: &mut MetaCxt,
         m: MetaVar,
         mut t: Term,
         sp: Spine,
@@ -149,7 +143,7 @@ impl PartialRenaming {
         }
 
         for u in sp.into_iter() {
-            t = Term::TApp(t.into(), self.go(mcxt, m, u.into())?.into());
+            t = Term::TApp(t.into(), self.go(metas, m, u.into())?.into());
         }
 
         Ok(t)
@@ -157,60 +151,60 @@ impl PartialRenaming {
 
     pub fn rename(
         self: &mut PartialRenaming,
-        mcxt: &mut MetaCxt,
+        metas: &mut MetaCxt,
         m: MetaVar,
         v: Rc<Value>,
     ) -> Result<Term, Error> {
-        self.go(mcxt, m, v)
+        self.go(metas, m, v)
     }
 }
 
-pub fn unify_sp(mcxt: &mut MetaCxt, lvl: Lvl, sp: Spine, sp_: Spine) -> Result<(), Error> {
+pub fn unify_sp(metas: &mut MetaCxt, lvl: Lvl, sp: Spine, sp_: Spine) -> Result<(), Error> {
     if sp.len() != sp_.len() {
         return Err(error!(ErrorKind::MetaSpine(sp, sp_)));
     }
 
     for (t, t_) in sp.into_iter().zip(sp_.into_iter()) {
-        unify(mcxt, lvl, t.into(), t_.into())?;
+        unify(metas, lvl, t.into(), t_.into())?;
     }
 
     Ok(())
 }
 
-pub fn unify(mcxt: &mut MetaCxt, lvl: Lvl, l: Rc<Value>, r: Rc<Value>) -> Result<(), Error> {
-    let l = Rc::<Value>::unwrap_or_clone(mcxt.force(l));
-    let r = Rc::<Value>::unwrap_or_clone(mcxt.force(r));
+pub fn unify(metas: &mut MetaCxt, lvl: Lvl, l: Rc<Value>, r: Rc<Value>) -> Result<(), Error> {
+    let l = metas.force(Rc::unwrap_or_clone(l));
+    let r = metas.force(Rc::unwrap_or_clone(r));
 
     match (l, r) {
         (Value::VU, Value::VU) => Ok(()),
         (Value::Vλ(_, t), Value::Vλ(_, t_)) => {
-            let a = t.eval(Value::new_rigid(lvl).into(), mcxt);
-            let b = t_.eval(Value::new_rigid(lvl).into(), mcxt);
+            let a = t.eval(Value::new_rigid(lvl).into(), metas);
+            let b = t_.eval(Value::new_rigid(lvl).into(), metas);
 
-            unify(mcxt, lvl.inc(), a, b)
+            unify(metas, lvl.inc(), a, b)
         }
         (t, Value::Vλ(_, t_)) => {
-            let a = t.app(mcxt, Value::new_rigid(lvl).into());
-            let b = t_.eval(Value::new_rigid(lvl).into(), mcxt);
+            let a = t.app(metas, Value::new_rigid(lvl).into());
+            let b = t_.eval(Value::new_rigid(lvl).into(), metas);
 
-            unify(mcxt, lvl.inc(), a, b)
+            unify(metas, lvl.inc(), a, b)
         }
         (Value::Vλ(_, t), t_) => {
-            let a = t.eval(Value::new_rigid(lvl).into(), mcxt);
-            let b = t_.app(mcxt, Value::new_rigid(lvl).into());
+            let a = t.eval(Value::new_rigid(lvl).into(), metas);
+            let b = t_.app(metas, Value::new_rigid(lvl).into());
 
-            unify(mcxt, lvl.inc(), a, b)
+            unify(metas, lvl.inc(), a, b)
         }
         (Value::VΠ(_, a, b), Value::VΠ(_, a_, b_)) => {
-            unify(mcxt, lvl, a, a_)?;
-            let b = b.eval(Value::new_rigid(lvl).into(), mcxt);
-            let b_ = b_.eval(Value::new_rigid(lvl).into(), mcxt);
-            unify(mcxt, lvl.inc(), b, b_)
+            unify(metas, lvl, a, a_)?;
+            let b = b.eval(Value::new_rigid(lvl).into(), metas);
+            let b_ = b_.eval(Value::new_rigid(lvl).into(), metas);
+            unify(metas, lvl.inc(), b, b_)
         }
-        (Value::VRigid(x, sp), Value::VRigid(x_, sp_)) if x == x_ => unify_sp(mcxt, lvl, sp, sp_),
-        (Value::VFlex(m, sp), Value::VFlex(m_, sp_)) if m == m_ => unify_sp(mcxt, lvl, sp, sp_),
-        (Value::VFlex(m, sp), t_) => solve(mcxt, lvl, m, sp, t_.into()),
-        (t, Value::VFlex(m_, sp_)) => solve(mcxt, lvl, m_, sp_, t.into()),
+        (Value::VRigid(x, sp), Value::VRigid(x_, sp_)) if x == x_ => unify_sp(metas, lvl, sp, sp_),
+        (Value::VFlex(m, sp), Value::VFlex(m_, sp_)) if m == m_ => unify_sp(metas, lvl, sp, sp_),
+        (Value::VFlex(m, sp), t_) => solve(metas, lvl, m, sp, t_.into()),
+        (t, Value::VFlex(m_, sp_)) => solve(metas, lvl, m_, sp_, t.into()),
         (l, r) => Err(error!(ErrorKind::MetaUnify(l, r))),
     }
 }

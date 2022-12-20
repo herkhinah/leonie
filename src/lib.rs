@@ -1,7 +1,7 @@
 #![feature(arc_unwrap_or_clone)]
 #![feature(test)]
 
-use std::{fmt::Debug, rc::Rc};
+use std::{fmt::Debug, ops::Deref, rc::Rc};
 
 use error::{Error, ErrorKind};
 use metas::{unify, MetaCxt};
@@ -289,50 +289,53 @@ impl Cxt {
     }
 
     pub fn check(&mut self, raw: Raw, expected_type: Rc<Type>) -> Result<Term, Error> {
-        Ok(match (raw, Rc::<Value>::unwrap_or_clone(expected_type)) {
-            (Raw::RSrcPos(pos, raw), expected_type) => {
+        match raw {
+            Raw::RSrcPos(pos, raw) => {
                 self.pos = pos;
-                self.check(*raw, expected_type.into())?
+                Ok(self.check(*raw, expected_type)?)
             }
-            (Raw::RLam(lambda_var, lambda_body), Value::VΠ(_, domain, codomain)) => {
-                let codomain = codomain.eval(Value::new_rigid(self.lvl).into(), &mut self.metas);
-                let lambda_body = self
-                    .bind(lambda_var.clone(), domain, |cxt| {
-                        cxt.check(*lambda_body, codomain)
-                    })
-                    .0?;
-                Term::Tλ(lambda_var, lambda_body.into())
-            }
-            (Raw::RLet(binder_name, binder_type, binder_def, scope), expected_type) => {
+            Raw::RLet(binder_name, binder_type, binder_def, scope) => {
                 let binder_type = self.check(*binder_type, Value::VU.into())?;
                 let v_binder_type = self.env.eval(&mut self.metas, binder_type.clone());
                 let binder_def = self.check(*binder_def, v_binder_type.clone())?;
                 let v_binder_def = self.env.eval(&mut self.metas, binder_def.clone());
                 let scope = self
                     .define(binder_name.clone(), v_binder_def, v_binder_type, |cxt| {
-                        cxt.check(*scope, expected_type.into())
+                        cxt.check(*scope, expected_type)
                     })
                     .0?;
-                Term::TLet(
+                Ok(Term::TLet(
                     binder_name,
                     binder_type.into(),
                     binder_def.into(),
                     scope.into(),
-                )
+                ))
             }
-            (Raw::RHole, _) => self.fresh_meta(),
-            (raw, expected_type) => {
+            Raw::RHole => Ok(self.fresh_meta()),
+            raw => {
+                if matches!(expected_type.deref(), Value::VΠ(_, _, _))
+                    && matches!(&raw, Raw::RLam(_, _))
+                {
+                    if let (Raw::RLam(lambda_var, lambda_body), Value::VΠ(_, domain, codomain)) =
+                        (raw, Rc::unwrap_or_clone(expected_type))
+                    {
+                        let codomain =
+                            codomain.eval(Value::new_rigid(self.lvl).into(), &mut self.metas);
+                        let lambda_body = self
+                            .bind(lambda_var.clone(), domain, |cxt| {
+                                cxt.check(*lambda_body, codomain)
+                            })
+                            .0?;
+                        return Ok(Term::Tλ(lambda_var, lambda_body.into()));
+                    }
+                    panic!();
+                }
                 let (t, inferred_type) = self.infer(raw)?;
 
-                unify(
-                    &mut self.metas,
-                    self.lvl,
-                    expected_type.into(),
-                    inferred_type,
-                )?;
-                t
+                unify(&mut self.metas, self.lvl, expected_type, inferred_type)?;
+                Ok(t)
             }
-        })
+        }
     }
 
     pub fn close_val(&mut self, value: Value) -> Closure {
@@ -381,11 +384,13 @@ impl Cxt {
             Raw::RApp(rator, rand) => {
                 let (rator, inferred_rator) = self.infer(*rator)?;
                 let (inferred_rator_domain, inferred_rator_codomain) =
-                    match Rc::<Value>::unwrap_or_clone(self.metas.force(inferred_rator)) {
+                    match Rc::<Value>::unwrap_or_clone(inferred_rator) {
                         Value::VΠ(_, rator_domain, rator_codomain) => {
                             (rator_domain, rator_codomain)
                         }
                         inferred_rator => {
+                            let inferred_rator = self.metas.force(inferred_rator);
+
                             let mut meta_domain = {
                                 let meta_domain = self.fresh_meta();
                                 self.eval(meta_domain)
