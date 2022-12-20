@@ -102,7 +102,7 @@ impl std::fmt::Display for Raw {
                     close(prec, PI_P, f)
                 }
                 Raw::RLet(x, a, b, c) => {
-                    write!(f, "let {} : ", x)?;
+                    write!(f, "let {x} : ")?;
 
                     print(LET_P, a, f)?;
                     write!(f, " := ")?;

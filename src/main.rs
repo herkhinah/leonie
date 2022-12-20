@@ -1,4 +1,6 @@
-use std::io::Read;
+#![feature(arc_unwrap_or_clone)]
+
+use std::{io::Read, rc::Rc};
 
 use leonie::{parser::parse, term::TPrettyPrinter, Cxt};
 
@@ -16,7 +18,7 @@ fn main() -> Result<(), ()> {
         if let Ok((term, ty)) = cxt.infer(raw) {
             let nf_term = cxt.normal_form(term);
             let lvl = cxt.lvl();
-            let nf_type = ty.quote(&mut cxt.metas, lvl);
+            let nf_type = Rc::unwrap_or_clone(ty).quote(&mut cxt.metas, lvl);
 
             println!(
                 "{}\n  :\n{}",

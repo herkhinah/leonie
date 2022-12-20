@@ -1,4 +1,6 @@
+#![feature(arc_unwrap_or_clone)]
 #![feature(test)]
+
 use std::{fmt::Debug, rc::Rc};
 
 use error::{Error, ErrorKind};
@@ -69,26 +71,26 @@ impl std::ops::DerefMut for Lvl {
     }
 }
 
-type VTy = Box<Value>;
+type VTy = Rc<Value>;
 
 #[derive(Debug, Clone)]
-pub struct Closure(Env, Tm);
+pub struct Closure(Env, Rc<Term>);
 
 impl Closure {
-    pub fn new(env: Env, term: Tm) -> Self {
+    pub fn new(env: Env, term: Rc<Term>) -> Self {
         Closure(env, term)
     }
 
-    pub fn eval(self, v: Value, metas: &mut MetaCxt) -> Value {
+    pub fn eval(self, v: Rc<Value>, metas: &mut MetaCxt) -> Rc<Value> {
         let Closure(mut env, t) = self;
         env.push(v);
 
-        env.eval(metas, *t)
+        env.eval(metas, Rc::<Term>::unwrap_or_clone(t))
     }
 }
 
 pub mod env {
-    use std::{ops::Index, slice::Iter};
+    use std::{ops::Index, rc::Rc, slice::Iter};
 
     use crate::{
         metas::{MetaCxt, MetaEntry},
@@ -97,38 +99,40 @@ pub mod env {
     };
 
     #[derive(Debug, Clone, Default)]
-    pub struct Env(Vec<Value>);
+    pub struct Env(Vec<Rc<Value>>);
 
     impl Env {
-        pub fn push(&mut self, value: Value) {
+        pub fn push(&mut self, value: Rc<Value>) {
             self.0.push(value)
         }
 
-        pub fn pop(&mut self) -> Option<Value> {
+        pub fn pop(&mut self) -> Option<Rc<Value>> {
             self.0.pop()
         }
 
-        pub fn iter(&self) -> Iter<Value> {
+        pub fn iter(&self) -> Iter<Rc<Value>> {
             self.0.iter()
         }
 
         pub fn eval_under_binder<T>(
             &mut self,
-            value: Value,
+            value: Rc<Value>,
             f: impl FnOnce(&mut Self) -> T,
-        ) -> (T, Value) {
+        ) -> (T, Rc<Value>) {
             self.push(value);
             (f(self), self.pop().unwrap())
         }
 
-        pub fn eval(&mut self, metas: &mut MetaCxt, term: Term) -> Value {
+        pub fn eval(&mut self, metas: &mut MetaCxt, term: Term) -> Rc<Value> {
             match term {
                 Term::TV(ix) => self[ix].clone(),
-                Term::Tλ(var, body) => Value::Vλ(var, Closure::new(self.clone(), body)),
+                Term::Tλ(var, body) => {
+                    Value::Vλ(var, Closure::new(self.clone(), body.into())).into()
+                }
                 Term::TΠ(var, domain, codomain) => {
                     let domain = self.eval(metas, *domain);
 
-                    Value::VΠ(var, domain.into(), Closure::new(self.clone(), codomain))
+                    Value::VΠ(var, domain, Closure::new(self.clone(), codomain.into())).into()
                 }
                 Term::TLet(_, _, bound_term, scope) => {
                     let value = self.eval(metas, *bound_term);
@@ -137,16 +141,16 @@ pub mod env {
                         .0
                 }
                 Term::TMeta(m) => match metas[m].clone() {
-                    MetaEntry::Solved(v) => v,
-                    MetaEntry::Unsolved => Value::new_flex(m),
+                    MetaEntry::Solved(v) => v.into(),
+                    MetaEntry::Unsolved => Value::new_flex(m).into(),
                 },
                 Term::TApp(rator, rand) => {
                     let rator = self.eval(metas, *rator);
                     let rand = self.eval(metas, *rand);
 
-                    rator.app(metas, rand)
+                    Rc::unwrap_or_clone(rator).app(metas, rand)
                 }
-                Term::TU => Value::VU,
+                Term::TU => Value::VU.into(),
                 Term::TInsertedMeta(m, bds) => {
                     let mut args = Spine::default();
 
@@ -155,10 +159,10 @@ pub mod env {
                             let mut val = val.clone();
                             for (t, bds) in self.iter().zip(bds.into_iter()) {
                                 if let BD::Bound = bds {
-                                    val = val.app(metas, t.clone());
+                                    val = Rc::unwrap_or_clone(val.app(metas, t.clone()));
                                 }
                             }
-                            val
+                            val.into()
                         }
                         MetaEntry::Unsolved => {
                             for (t, bds) in self.iter().cloned().zip(bds.into_iter()) {
@@ -167,7 +171,7 @@ pub mod env {
                                 }
                             }
 
-                            Value::VFlex(m, args)
+                            Value::VFlex(m, args).into()
                         }
                     }
                 }
@@ -180,7 +184,7 @@ pub mod env {
     }
 
     impl Index<Ix> for Env {
-        type Output = Value;
+        type Output = Rc<Value>;
 
         fn index(&self, index: Ix) -> &Self::Output {
             &self.0[self.0.len() - 1 - index.0]
@@ -188,7 +192,7 @@ pub mod env {
     }
 
     impl Index<Lvl> for Env {
-        type Output = Value;
+        type Output = Rc<Value>;
 
         fn index(&self, index: Lvl) -> &Self::Output {
             &self.0[index.0]
@@ -211,7 +215,7 @@ pub struct Cxt {
     /// used for unification
     lvl: Lvl,
     /// used for raw name lookup, pretty printing
-    types: Vec<(Name, Type)>,
+    types: Vec<(Name, Rc<Type>)>,
     /// used for fresh meta creation
     bds: Vec<BD>,
     /// used for error reporting
@@ -229,7 +233,7 @@ impl Cxt {
         self.lvl
     }
 
-    pub fn types(&self) -> &Vec<(Name, Type)> {
+    pub fn types(&self) -> &Vec<(Name, Rc<Type>)> {
         &self.types
     }
 
@@ -244,10 +248,10 @@ impl Cxt {
     pub fn bind<T>(
         &mut self,
         var_name: Name,
-        var_type: Type,
+        var_type: Rc<Type>,
         scope: impl FnOnce(&mut Self) -> T,
-    ) -> (T, (Name, Type)) {
-        self.env.push(Value::new_rigid(self.lvl));
+    ) -> (T, (Name, Rc<Type>)) {
+        self.env.push(Value::new_rigid(self.lvl).into());
         self.lvl = self.lvl.inc();
         self.types.push((var_name, var_type));
         self.bds.push(BD::Bound);
@@ -262,10 +266,10 @@ impl Cxt {
     pub fn define<T>(
         &mut self,
         binder_name: Name,
-        binder_def: Value,
-        binder_type: Type,
+        binder_def: Rc<Value>,
+        binder_type: Rc<Type>,
         scope: impl FnOnce(&mut Self) -> T,
-    ) -> (T, (Name, Type, Value)) {
+    ) -> (T, (Name, Rc<Type>, Rc<Value>)) {
         self.env.push(binder_def);
         self.lvl = self.lvl.inc();
         self.types.push((binder_name, binder_type));
@@ -276,7 +280,7 @@ impl Cxt {
         (res, self.pop())
     }
 
-    fn pop(&mut self) -> (Name, Value, Value) {
+    fn pop(&mut self) -> (Name, Rc<Value>, Rc<Value>) {
         self.bds.pop();
         let value = self.env.pop().unwrap();
         let (var_name, var_type) = self.types.pop().unwrap();
@@ -284,29 +288,29 @@ impl Cxt {
         (var_name, var_type, value)
     }
 
-    pub fn check(&mut self, raw: Raw, expected_type: Type) -> Result<Term, Error> {
-        Ok(match (raw, expected_type) {
+    pub fn check(&mut self, raw: Raw, expected_type: Rc<Type>) -> Result<Term, Error> {
+        Ok(match (raw, Rc::<Value>::unwrap_or_clone(expected_type)) {
             (Raw::RSrcPos(pos, raw), expected_type) => {
                 self.pos = pos;
-                self.check(*raw, expected_type)?
+                self.check(*raw, expected_type.into())?
             }
             (Raw::RLam(lambda_var, lambda_body), Value::VΠ(_, domain, codomain)) => {
-                let codomain = codomain.eval(Value::new_rigid(self.lvl), &mut self.metas);
+                let codomain = codomain.eval(Value::new_rigid(self.lvl).into(), &mut self.metas);
                 let lambda_body = self
-                    .bind(lambda_var.clone(), *domain, |cxt| {
+                    .bind(lambda_var.clone(), domain, |cxt| {
                         cxt.check(*lambda_body, codomain)
                     })
                     .0?;
                 Term::Tλ(lambda_var, lambda_body.into())
             }
             (Raw::RLet(binder_name, binder_type, binder_def, scope), expected_type) => {
-                let binder_type = self.check(*binder_type, Value::VU)?;
+                let binder_type = self.check(*binder_type, Value::VU.into())?;
                 let v_binder_type = self.env.eval(&mut self.metas, binder_type.clone());
                 let binder_def = self.check(*binder_def, v_binder_type.clone())?;
                 let v_binder_def = self.env.eval(&mut self.metas, binder_def.clone());
                 let scope = self
                     .define(binder_name.clone(), v_binder_def, v_binder_type, |cxt| {
-                        cxt.check(*scope, expected_type)
+                        cxt.check(*scope, expected_type.into())
                     })
                     .0?;
                 Term::TLet(
@@ -320,7 +324,12 @@ impl Cxt {
             (raw, expected_type) => {
                 let (t, inferred_type) = self.infer(raw)?;
 
-                unify(&mut self.metas, self.lvl, expected_type, inferred_type)?;
+                unify(
+                    &mut self.metas,
+                    self.lvl,
+                    expected_type.into(),
+                    inferred_type,
+                )?;
                 t
             }
         })
@@ -333,7 +342,7 @@ impl Cxt {
         Closure::new(env, quoted_term.into())
     }
 
-    pub fn infer(&mut self, raw: Raw) -> Result<(Term, Type), Error> {
+    pub fn infer(&mut self, raw: Raw) -> Result<(Term, Rc<Type>), Error> {
         Ok(match raw {
             Raw::RVar(var) => {
                 let mut result = Err(());
@@ -363,43 +372,44 @@ impl Cxt {
                     Term::Tλ(var.clone(), term.into()),
                     Type::VΠ(
                         var,
-                        inferred_domain.into(),
-                        self.close_val(inferred_codomain),
-                    ),
+                        inferred_domain,
+                        self.close_val(Rc::<Value>::unwrap_or_clone(inferred_codomain)),
+                    )
+                    .into(),
                 )
             }
             Raw::RApp(rator, rand) => {
                 let (rator, inferred_rator) = self.infer(*rator)?;
-                let (inferred_rator_domain, inferred_rator_codomain) = match self
-                    .metas
-                    .force(inferred_rator)
-                {
-                    Value::VΠ(_, rator_domain, rator_codomain) => (*rator_domain, rator_codomain),
-                    inferred_rator => {
-                        let mut meta_domain = {
-                            let meta_domain = self.fresh_meta();
-                            self.eval(meta_domain)
-                        };
-                        let (x, meta_codomain) = {
-                            let (meta_codomain, (var_domain, meta_domain_)) =
-                                self.bind("a".into(), meta_domain, |cxt| cxt.fresh_meta());
-                            meta_domain = meta_domain_;
-                            (
-                                var_domain,
-                                Closure::new(self.env.clone(), Box::new(meta_codomain)),
-                            )
-                        };
+                let (inferred_rator_domain, inferred_rator_codomain) =
+                    match Rc::<Value>::unwrap_or_clone(self.metas.force(inferred_rator)) {
+                        Value::VΠ(_, rator_domain, rator_codomain) => {
+                            (rator_domain, rator_codomain)
+                        }
+                        inferred_rator => {
+                            let mut meta_domain = {
+                                let meta_domain = self.fresh_meta();
+                                self.eval(meta_domain)
+                            };
+                            let (x, meta_codomain) = {
+                                let (meta_codomain, (var_domain, meta_domain_)) =
+                                    self.bind("a".into(), meta_domain, |cxt| cxt.fresh_meta());
+                                meta_domain = meta_domain_;
+                                (
+                                    var_domain,
+                                    Closure::new(self.env.clone(), Rc::new(meta_codomain)),
+                                )
+                            };
 
-                        let lvl = self.lvl;
-                        unify(
-                            &mut self.metas,
-                            lvl,
-                            Value::VΠ(x, meta_domain.clone().into(), meta_codomain.clone()),
-                            inferred_rator,
-                        )?;
-                        (meta_domain, meta_codomain)
-                    }
-                };
+                            let lvl = self.lvl;
+                            unify(
+                                &mut self.metas,
+                                lvl,
+                                Value::VΠ(x, meta_domain.clone(), meta_codomain.clone()).into(),
+                                inferred_rator.into(),
+                            )?;
+                            (meta_domain, meta_codomain)
+                        }
+                    };
                 let checked_rand = self.check(*rand, inferred_rator_domain)?;
 
                 let inferred_type = {
@@ -409,14 +419,14 @@ impl Cxt {
 
                 (Term::TApp(rator.into(), checked_rand.into()), inferred_type)
             }
-            Raw::RU => (Term::TU, Value::VU),
+            Raw::RU => (Term::TU, Value::VU.into()),
             Raw::RPi(mut var_domain, domain, codomain) => {
-                let checked_domain = self.check(*domain, Value::VU)?;
+                let checked_domain = self.check(*domain, Value::VU.into())?;
                 let checked_codomain = {
                     let evaluated_domain = self.eval(checked_domain.clone());
                     let (check_result, (var_domain_, _)) =
                         self.bind(var_domain, evaluated_domain, |cxt| {
-                            cxt.check(*codomain, Value::VU)
+                            cxt.check(*codomain, Value::VU.into())
                         });
                     var_domain = var_domain_;
                     check_result?
@@ -424,11 +434,11 @@ impl Cxt {
 
                 (
                     Term::TΠ(var_domain, checked_domain.into(), checked_codomain.into()),
-                    Value::VU,
+                    Value::VU.into(),
                 )
             }
             Raw::RLet(binder_name, binder_type, binder_def, scope) => {
-                let binder_type = self.check(*binder_type, Value::VU)?;
+                let binder_type = self.check(*binder_type, Value::VU.into())?;
 
                 let v_binder_type = self.eval(binder_type.clone());
                 let binder_def = self.check(*binder_def, v_binder_type.clone())?;
@@ -466,10 +476,10 @@ impl Cxt {
     }
 
     pub fn normal_form(&mut self, term: Term) -> Term {
-        self.eval(term).quote(&mut self.metas, self.env.level())
+        Rc::unwrap_or_clone(self.eval(term)).quote(&mut self.metas, self.env.level())
     }
 
-    fn eval(&mut self, term: Term) -> Value {
+    fn eval(&mut self, term: Term) -> Rc<Value> {
         let Self { env, metas, .. } = self;
 
         env.eval(metas, term)

@@ -98,7 +98,7 @@ impl<'a> std::fmt::Display for TPrettyPrinter<'a> {
                 ),
                 Term::TLet(x, a, b, c) => {
                     fresh.with_unfresh(x, |fresh, name| -> std::fmt::Result {
-                        write!(f, "let {} : ", name)?;
+                        write!(f, "let {name} : ")?;
 
                         print(LET_P, a, f, fresh)?;
                         write!(f, " := ")?;

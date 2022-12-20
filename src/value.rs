@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use crate::{
     metas::{MetaCxt, MetaVar},
     Closure, Lvl, Name, Term, VTy,
@@ -18,8 +20,8 @@ impl Spine {
         }
     }
 
-    pub fn push(&mut self, value: Value) {
-        self.0.push(value)
+    pub fn push(&mut self, value: Rc<Value>) {
+        self.0.push(Rc::unwrap_or_clone(value))
     }
 }
 
@@ -72,15 +74,15 @@ impl Value {
             Value::VFlex(m, sp) => sp.quote(metas, lvl, Term::TMeta(m)),
             Value::VRigid(x, sp) => sp.quote(metas, lvl, Term::TV(x.as_index(lvl))),
             Value::Vλ(x, clos) => {
-                let val = clos.eval(Value::new_rigid(lvl), metas);
-                Term::Tλ(x, val.quote(metas, lvl.inc()).into())
+                let val = clos.eval(Value::new_rigid(lvl).into(), metas);
+                Term::Tλ(x, Rc::unwrap_or_clone(val).quote(metas, lvl.inc()).into())
             }
             Value::VΠ(x, a, clos) => {
-                let a = a.quote(metas, lvl);
+                let a = Rc::unwrap_or_clone(a).quote(metas, lvl);
 
-                let b = clos.eval(Value::new_rigid(lvl), metas);
+                let b = clos.eval(Value::new_rigid(lvl).into(), metas);
 
-                let b = b.quote(metas, lvl.inc());
+                let b = Rc::unwrap_or_clone(b).quote(metas, lvl.inc());
 
                 Term::TΠ(x, a.into(), b.into())
             }
@@ -88,15 +90,15 @@ impl Value {
         }
     }
 
-    pub fn app(self, metas: &mut MetaCxt, value: Value) -> Value {
+    pub fn app(self, metas: &mut MetaCxt, value: Rc<Value>) -> Rc<Value> {
         match self {
             Value::VFlex(m, mut sp) => {
                 sp.push(value);
-                Value::VFlex(m, sp)
+                Value::VFlex(m, sp).into()
             }
             Value::VRigid(x, mut sp) => {
                 sp.push(value);
-                Value::VRigid(x, sp)
+                Value::VRigid(x, sp).into()
             }
             Value::Vλ(_, clos) => clos.eval(value, metas),
             _ => panic!(),
