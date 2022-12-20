@@ -1,3 +1,7 @@
+extern crate test;
+
+use std::rc::Rc;
+
 use const_format::concatcp;
 
 use crate::{parser::parse, term::TPrettyPrinter, Cxt};

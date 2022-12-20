@@ -1,3 +1,4 @@
+#![feature(test)]
 use std::{fmt::Debug, rc::Rc};
 
 use error::{Error, ErrorKind};
