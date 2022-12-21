@@ -34,7 +34,6 @@ in
       clippy = lib.mkForce toolchain.clippy;
     };
     hooks = {
-      clippy.enable = true;
       rustfmt.enable = true;
 
       cargo-test = {
@@ -43,8 +42,19 @@ in
         description = "run tests via cargo test";
         entry = "${toolchain.cargo}/bin/cargo test";
         types = ["rust"];
+        files = "\\.rs$";
         pass_filenames = false;
       };
+
+      cargo-clippy = {
+        enable = true;
+        name = "cargo-clippy";
+        description = "run clippy linter";
+        entry = "${toolchain.cargo}/bin/cargo clippy -- -D warnings";
+        types = ["rust"];
+        pass_filenames = false;
+      };
+
       
       cargo-llvm-cov = 
         let
@@ -65,7 +75,7 @@ in
         entry = "${wrapper}/bin/cargo-llvm-cov llvm-cov --open";
         files = "(\\.rs$)|(^Cargo\\.toml$)|(^Cargo\\.lock$)";
         pass_filenames = false;
-	stages = [ "push" ];
+	      stages = [ "push" ];
       };
     };
   };
