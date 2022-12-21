@@ -24,8 +24,8 @@ pub type Name = Rc<str>;
 
 pub type SourcePos = std::ops::Range<usize>;
 
-type Tm = Box<Term>;
-type Ty = Box<Term>;
+type Tm = Rc<Term>;
+type Ty = Rc<Term>;
 
 /// De Bruijn index
 #[derive(Clone, Copy)]
@@ -126,18 +126,16 @@ pub mod env {
         pub fn eval(&mut self, metas: &mut MetaCxt, term: Term) -> Rc<Value> {
             match term {
                 Term::TV(ix) => self[ix].clone(),
-                Term::Tλ(var, body) => {
-                    Value::Vλ(var, Closure::new(self.clone(), body.into())).into()
-                }
+                Term::Tλ(var, body) => Value::Vλ(var, Closure::new(self.clone(), body)).into(),
                 Term::TΠ(var, domain, codomain) => {
-                    let domain = self.eval(metas, *domain);
+                    let domain = self.eval(metas, Rc::unwrap_or_clone(domain));
 
-                    Value::VΠ(var, domain, Closure::new(self.clone(), codomain.into())).into()
+                    Value::VΠ(var, domain, Closure::new(self.clone(), codomain)).into()
                 }
                 Term::TLet(_, _, bound_term, scope) => {
-                    let value = self.eval(metas, *bound_term);
+                    let value = self.eval(metas, Rc::unwrap_or_clone(bound_term));
 
-                    self.eval_under_binder(value, |env| env.eval(metas, *scope))
+                    self.eval_under_binder(value, |env| env.eval(metas, Rc::unwrap_or_clone(scope)))
                         .0
                 }
                 Term::TMeta(m) => match metas[m].clone() {
@@ -145,8 +143,8 @@ pub mod env {
                     MetaEntry::Unsolved => Value::new_flex(m).into(),
                 },
                 Term::TApp(rator, rand) => {
-                    let rator = self.eval(metas, *rator);
-                    let rand = self.eval(metas, *rand);
+                    let rator = self.eval(metas, Rc::unwrap_or_clone(rator));
+                    let rand = self.eval(metas, Rc::unwrap_or_clone(rand));
 
                     Rc::unwrap_or_clone(rator).app(metas, rand)
                 }
