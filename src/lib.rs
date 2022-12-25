@@ -4,7 +4,7 @@
 use std::{fmt::Debug, ops::Deref, rc::Rc};
 
 use error::{Error, ErrorKind};
-use metas::{unify, MetaCxt};
+use metas::MetaCxt;
 use raw::Raw;
 use term::Term;
 use value::{Type, Value};
@@ -330,7 +330,9 @@ impl Cxt {
                 }
                 let (t, inferred_type) = self.infer(raw)?;
 
-                unify(&mut self.metas, self.lvl, expected_type, inferred_type)?;
+                let lvl = self.lvl;
+
+                self.metas.unify(lvl, expected_type, inferred_type)?;
                 Ok(t)
             }
         }
@@ -404,8 +406,7 @@ impl Cxt {
                             };
 
                             let lvl = self.lvl;
-                            unify(
-                                &mut self.metas,
+                            self.metas.unify(
                                 lvl,
                                 Value::VΠ(x, meta_domain.clone(), meta_codomain.clone()).into(),
                                 inferred_rator.into(),
