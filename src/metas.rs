@@ -163,28 +163,28 @@ impl PartialRenaming {
         })
     }
 
-    fn go(&mut self, metas: &mut MetaCxt, m: MetaVar, v: Rc<Value>) -> Result<Term, Error> {
+    pub fn rename(&mut self, metas: &mut MetaCxt, m: MetaVar, v: Rc<Value>) -> Result<Term, Error> {
         match metas.force(Rc::unwrap_or_clone(v)) {
             Value::VFlex(m_, sp) => {
                 if m == m_ {
                     return Err(error!(ErrorKind::MetaOccurs(m, Value::VFlex(m_, sp))));
                 }
 
-                self.go_sp(metas, m, Term::TMeta(m_), sp)
+                self.rename_spine(metas, m, Term::TMeta(m_), sp)
             }
             Value::VRigid(x, sp) => match self.ren.get(&x) {
-                Some(x_) => self.go_sp(metas, m, Term::TV(x_.as_index(self.dom)), sp),
+                Some(x_) => self.rename_spine(metas, m, Term::TV(x_.as_index(self.dom)), sp),
                 None => Err(error!(ErrorKind::MetaScope(m, Value::VRigid(x, sp)))),
             },
             Value::Vλ(x, t) => {
                 let t = t.eval(Value::new_rigid(self.cod).into(), metas);
-                let t = self.lift(|pren| pren.go(metas, m, t))?;
+                let t = self.lift(|pren| pren.rename(metas, m, t))?;
                 Ok(Term::Tλ(x, t.into()))
             }
             Value::VΠ(x, a, b) => {
-                let a = self.go(metas, m, a)?;
+                let a = self.rename(metas, m, a)?;
                 let b = b.eval(Value::new_rigid(self.cod).into(), metas);
-                let b = self.lift(|pren| pren.go(metas, m, b))?;
+                let b = self.lift(|pren| pren.rename(metas, m, b))?;
 
                 Ok(Term::TΠ(x, a.into(), b.into()))
             }
@@ -192,7 +192,7 @@ impl PartialRenaming {
         }
     }
 
-    fn go_sp(
+    fn rename_spine(
         &mut self,
         metas: &mut MetaCxt,
         m: MetaVar,
@@ -204,19 +204,10 @@ impl PartialRenaming {
         }
 
         for u in sp.into_iter() {
-            t = Term::TApp(t.into(), self.go(metas, m, u.into())?.into());
+            t = Term::TApp(t.into(), self.rename(metas, m, u.into())?.into());
         }
 
         Ok(t)
-    }
-
-    pub fn rename(
-        self: &mut PartialRenaming,
-        metas: &mut MetaCxt,
-        m: MetaVar,
-        v: Rc<Value>,
-    ) -> Result<Term, Error> {
-        self.go(metas, m, v)
     }
 }
 
