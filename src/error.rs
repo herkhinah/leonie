@@ -17,7 +17,7 @@ pub enum ErrorKind {
     MetaOccurs(MetaVar, Value),
     MetaScope(MetaVar, Value),
     MetaSpine(Spine, Spine),
-    MetaInvert(Spine),
+    MetaInvert,
     MetaUnify(Value, Value),
     InferUnbound(),
 }

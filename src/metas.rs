@@ -147,12 +147,12 @@ impl PartialRenaming {
         let mut ren = Map::new();
         let dom = spine.len();
 
-        for (dom, t) in spine.iter().cloned().enumerate() {
+        for (dom, t) in spine.into_iter().enumerate() {
             match metas.force(t) {
                 Value::VRigid(x, y) if !ren.contains_key(&x) && y.is_empty() => {
                     ren.insert(x, Lvl(dom));
                 }
-                _ => return Err(error!(ErrorKind::MetaInvert(spine))),
+                _ => return Err(error!(ErrorKind::MetaInvert)),
             }
         }
 
