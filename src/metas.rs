@@ -48,7 +48,7 @@ impl MetaCxt {
                         v = Rc::unwrap_or_clone(v.app(self, arg.into()));
                     }
 
-                    v
+                    self.force(v)
                 }
                 _ => Value::VFlex(m, sp),
             },
