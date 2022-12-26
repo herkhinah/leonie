@@ -6,7 +6,7 @@ use std::{fmt::Debug, ops::Deref, rc::Rc};
 use error::{Error, ErrorKind};
 use metas::MetaCxt;
 use raw::Raw;
-use term::Term;
+use term::{Depth, Term};
 use value::{Type, Value};
 
 #[macro_use]
@@ -77,8 +77,9 @@ type VTy = Rc<Value>;
 pub struct Closure(Env, Rc<Term>);
 
 impl Closure {
-    pub fn new(env: Env, term: Rc<Term>) -> Self {
-        Closure(env, term)
+    pub fn from(env: &Env, term: Rc<Term>) -> Self {
+        let depth = term.depth().0 + 1;
+        Self(env.clone_with_capacity(depth), term)
     }
 
     pub fn eval(self, v: Rc<Value>, metas: &mut MetaCxt) -> Rc<Value> {
@@ -102,6 +103,12 @@ pub mod env {
     pub struct Env(Vec<Rc<Value>>);
 
     impl Env {
+        pub fn clone_with_capacity(&self, len: usize) -> Self {
+            let mut vec = Vec::with_capacity(self.0.len() + len);
+            self.0.clone_into(&mut vec);
+            Self(vec)
+        }
+
         pub fn push(&mut self, value: Rc<Value>) {
             self.0.push(value)
         }
@@ -126,13 +133,13 @@ pub mod env {
         pub fn eval(&mut self, metas: &mut MetaCxt, term: Term) -> Rc<Value> {
             match term {
                 Term::TV(ix) => self[ix].clone(),
-                Term::Tλ(var, body) => Value::Vλ(var, Closure::new(self.clone(), body)).into(),
-                Term::TΠ(var, domain, codomain) => {
+                Term::Tλ(_, var, body) => Value::Vλ(var, Closure::from(self, body)).into(),
+                Term::TΠ(_, var, domain, codomain) => {
                     let domain = self.eval(metas, Rc::unwrap_or_clone(domain));
 
-                    Value::VΠ(var, domain, Closure::new(self.clone(), codomain)).into()
+                    Value::VΠ(var, domain, Closure::from(self, codomain)).into()
                 }
-                Term::TLet(_, _, bound_term, scope) => {
+                Term::TLet(_, _, _, bound_term, scope) => {
                     let value = self.eval(metas, Rc::unwrap_or_clone(bound_term));
 
                     self.eval_under_binder(value, |env| env.eval(metas, Rc::unwrap_or_clone(scope)))
@@ -142,7 +149,7 @@ pub mod env {
                     MetaEntry::Solved(v) => v.into(),
                     MetaEntry::Unsolved => Value::new_flex(m).into(),
                 },
-                Term::TApp(rator, rand) => {
+                Term::TApp(_, rator, rand) => {
                     let rator = self.eval(metas, Rc::unwrap_or_clone(rator));
                     let rand = self.eval(metas, Rc::unwrap_or_clone(rand));
 
@@ -302,7 +309,11 @@ impl Cxt {
                         cxt.check(*scope, expected_type)
                     })
                     .0?;
+
+                let depth = std::cmp::max(binder_def.depth(), scope.depth().inc());
+
                 Ok(Term::TLet(
+                    depth,
                     binder_name,
                     binder_type.into(),
                     binder_def.into(),
@@ -324,7 +335,9 @@ impl Cxt {
                                 cxt.check(*lambda_body, codomain)
                             })
                             .0?;
-                        return Ok(Term::Tλ(lambda_var, lambda_body.into()));
+
+                        let depth = lambda_body.depth().inc();
+                        return Ok(Term::Tλ(depth, lambda_var, lambda_body.into()));
                     }
                     panic!();
                 }
@@ -340,9 +353,8 @@ impl Cxt {
 
     pub fn close_val(&mut self, value: Value) -> Closure {
         let lvl = self.lvl;
-        let env = self.env.clone();
         let quoted_term = value.quote(&mut self.metas, lvl.inc());
-        Closure::new(env, quoted_term.into())
+        Closure::from(&self.env, quoted_term.into())
     }
 
     pub fn infer(&mut self, raw: Raw) -> Result<(Term, Rc<Type>), Error> {
@@ -371,8 +383,10 @@ impl Cxt {
                     infer_result?
                 };
 
+                let depth = term.depth().inc();
+
                 (
-                    Term::Tλ(var.clone(), term.into()),
+                    Term::Tλ(depth, var.clone(), term.into()),
                     Type::VΠ(
                         var,
                         inferred_domain,
@@ -399,10 +413,7 @@ impl Cxt {
                                 let (meta_codomain, (var_domain, meta_domain_)) =
                                     self.bind("a".into(), meta_domain, |cxt| cxt.fresh_meta());
                                 meta_domain = meta_domain_;
-                                (
-                                    var_domain,
-                                    Closure::new(self.env.clone(), Rc::new(meta_codomain)),
-                                )
+                                (var_domain, Closure::from(&self.env, Rc::new(meta_codomain)))
                             };
 
                             let lvl = self.lvl;
@@ -421,7 +432,12 @@ impl Cxt {
                     inferred_rator_codomain.eval(evaluated_rand, &mut self.metas)
                 };
 
-                (Term::TApp(rator.into(), checked_rand.into()), inferred_type)
+                let depth = Depth::max(&rator, &checked_rand);
+
+                (
+                    Term::TApp(depth, rator.into(), checked_rand.into()),
+                    inferred_type,
+                )
             }
             Raw::RU => (Term::TU, Value::VU.into()),
             Raw::RPi(mut var_domain, domain, codomain) => {
@@ -436,8 +452,15 @@ impl Cxt {
                     check_result?
                 };
 
+                let depth = std::cmp::max(checked_domain.depth(), checked_codomain.depth().inc());
+
                 (
-                    Term::TΠ(var_domain, checked_domain.into(), checked_codomain.into()),
+                    Term::TΠ(
+                        depth,
+                        var_domain,
+                        checked_domain.into(),
+                        checked_codomain.into(),
+                    ),
                     Value::VU.into(),
                 )
             }
@@ -454,8 +477,14 @@ impl Cxt {
                     })
                     .0?;
 
+                let depth = std::cmp::max(
+                    std::cmp::max(binder_def.depth(), binder_type.depth()),
+                    scope.depth().inc(),
+                );
+
                 (
                     Term::TLet(
+                        depth,
                         binder_name,
                         binder_type.into(),
                         binder_def.into(),

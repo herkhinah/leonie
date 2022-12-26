@@ -144,7 +144,8 @@ impl PartialRenaming {
     }
 
     pub fn invert(metas: &mut MetaCxt, gamma: Lvl, spine: Spine) -> Result<Self, Error> {
-        let mut ren = vec![None; gamma.0];
+        let mut ren = vec![None; gamma.0 + 1];
+        ren.pop();
         let dom = spine.len();
 
         for (dom, t) in spine.into_iter().enumerate() {
@@ -183,14 +184,17 @@ impl PartialRenaming {
             Value::Vλ(x, t) => {
                 let t = t.eval(Value::new_rigid(self.cod).into(), metas);
                 let t = self.lift(|p_ren| p_ren.rename(metas, m, t))?;
-                Ok(Term::Tλ(x, t.into()))
+                let depth = t.depth().inc();
+                Ok(Term::Tλ(depth, x, t.into()))
             }
             Value::VΠ(x, a, b) => {
                 let a = self.rename(metas, m, a)?;
                 let b = b.eval(Value::new_rigid(self.cod).into(), metas);
                 let b = self.lift(|p_ren| p_ren.rename(metas, m, b))?;
 
-                Ok(Term::TΠ(x, a.into(), b.into()))
+                let depth = std::cmp::max(a.depth(), b.depth().inc());
+
+                Ok(Term::TΠ(depth, x, a.into(), b.into()))
             }
             Value::VU => Ok(Term::TU),
         }
@@ -208,7 +212,12 @@ impl PartialRenaming {
         }
 
         for u in sp.into_iter() {
-            t = Term::TApp(t.into(), self.rename(metas, m, u.into())?.into());
+            let rator = t;
+            let rand = self.rename(metas, m, u.into())?;
+
+            let depth = std::cmp::max(rator.depth(), rand.depth());
+
+            t = Term::TApp(depth, rator.into(), rand.into());
         }
 
         Ok(t)
@@ -217,7 +226,8 @@ impl PartialRenaming {
 
 pub fn lams(lvl: Lvl, mut t: Term) -> Term {
     for i in 0..*lvl {
-        t = Term::Tλ(format!("x{}", i + 1).into(), t.into());
+        let depth = t.depth().inc();
+        t = Term::Tλ(depth, format!("x{}", i + 1).into(), t.into());
     }
     t
 }

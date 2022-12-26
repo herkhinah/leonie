@@ -2,16 +2,41 @@ use std::{ops::Deref, rc::Rc};
 
 use crate::{metas::MetaVar, term::fresh::Fresh, Cxt, Ix, Lvl, Name, Tm, Ty, BD};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Depth(pub usize);
+
+impl Depth {
+    pub fn max(t1: &Term, t2: &Term) -> Depth {
+        Self(std::cmp::max(t1.depth().0, t2.depth().0))
+    }
+
+    pub fn inc(self) -> Self {
+        Self(self.0 + 1)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Term {
-    TV(Ix),
-    Tλ(Name, Tm),
-    TΠ(Name, Ty, Ty),
-    TLet(Name, Ty, Tm, Tm),
-    TMeta(MetaVar),
+    Tλ(Depth, Name, Tm),
+    TΠ(Depth, Name, Ty, Ty),
+    TLet(Depth, Name, Ty, Tm, Tm),
     TInsertedMeta(MetaVar, Vec<BD>),
-    TApp(Tm, Tm),
+    TApp(Depth, Tm, Tm),
+    TMeta(MetaVar),
+    TV(Ix),
     TU,
+}
+
+impl Term {
+    pub fn depth(&self) -> Depth {
+        match self {
+            Term::Tλ(depth, _, _)
+            | Term::TΠ(depth, _, _, _)
+            | Term::TLet(depth, _, _, _, _)
+            | Term::TApp(depth, _, _) => *depth,
+            _ => Depth(0),
+        }
+    }
 }
 
 pub struct TPrettyPrinter<'a>(pub &'a Cxt, pub &'a Term);
@@ -49,7 +74,7 @@ impl<'a> std::fmt::Display for TPrettyPrinter<'a> {
             fresh: &mut Fresh,
         ) -> std::fmt::Result {
             match term {
-                Term::Tλ(x, term) => fresh.with_unfresh(x, |fresh, x| {
+                Term::Tλ(_, x, term) => fresh.with_unfresh(x, |fresh, x| {
                     write!(f, " {x}")?;
                     print_lambda_body(term, f, fresh)
                 }),
@@ -70,7 +95,7 @@ impl<'a> std::fmt::Display for TPrettyPrinter<'a> {
                 Term::TV(x) => {
                     write!(f, "{}", fresh[*x])
                 }
-                Term::Tλ(x, ref term) => fresh.with_unfresh(x, |fresh, x| {
+                Term::Tλ(_, x, ref term) => fresh.with_unfresh(x, |fresh, x| {
                     parenthize(
                         || show_parens(prec, LET_P),
                         f,
@@ -80,7 +105,7 @@ impl<'a> std::fmt::Display for TPrettyPrinter<'a> {
                         },
                     )
                 }),
-                Term::TΠ(x, a, ref b) => parenthize(
+                Term::TΠ(_, x, a, ref b) => parenthize(
                     || show_parens(prec, PI_P),
                     f,
                     |f| {
@@ -96,7 +121,7 @@ impl<'a> std::fmt::Display for TPrettyPrinter<'a> {
                         fresh.with_fresh(x, |fresh, _| print(PI_P, b, f, fresh))
                     },
                 ),
-                Term::TLet(x, a, b, c) => {
+                Term::TLet(_, x, a, b, c) => {
                     fresh.with_unfresh(x, |fresh, name| -> std::fmt::Result {
                         write!(f, "let {name} : ")?;
 
@@ -141,7 +166,7 @@ impl<'a> std::fmt::Display for TPrettyPrinter<'a> {
                         Ok(())
                     })
                 }
-                Term::TApp(t, u) => parenthize(
+                Term::TApp(_, t, u) => parenthize(
                     || show_parens(prec, APP_P),
                     f,
                     |f| {

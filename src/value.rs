@@ -11,10 +11,11 @@ pub struct Spine(Vec<Value>);
 impl Spine {
     pub fn quote(mut self, metas: &mut MetaCxt, lvl: Lvl, tm: Term) -> Term {
         if let Some(u) = self.0.pop() {
-            Term::TApp(
-                self.quote(metas, lvl, tm).into(),
-                u.quote(metas, lvl).into(),
-            )
+            let rator = self.quote(metas, lvl, tm);
+            let rand = u.quote(metas, lvl);
+            let depth = std::cmp::max(rator.depth(), rand.depth());
+
+            Term::TApp(depth, rator.into(), rand.into())
         } else {
             tm
         }
@@ -75,7 +76,9 @@ impl Value {
             Value::VRigid(x, sp) => sp.quote(metas, lvl, Term::TV(x.as_index(lvl))),
             Value::Vλ(x, clos) => {
                 let val = clos.eval(Value::new_rigid(lvl).into(), metas);
-                Term::Tλ(x, Rc::unwrap_or_clone(val).quote(metas, lvl.inc()).into())
+                let body = Rc::unwrap_or_clone(val).quote(metas, lvl.inc());
+                let depth = body.depth().inc();
+                Term::Tλ(depth, x, body.into())
             }
             Value::VΠ(x, a, clos) => {
                 let a = Rc::unwrap_or_clone(a).quote(metas, lvl);
@@ -84,7 +87,9 @@ impl Value {
 
                 let b = Rc::unwrap_or_clone(b).quote(metas, lvl.inc());
 
-                Term::TΠ(x, a.into(), b.into())
+                let depth = std::cmp::max(a.depth(), b.depth().inc());
+
+                Term::TΠ(depth, x, a.into(), b.into())
             }
             Value::VU => Term::TU,
         }
