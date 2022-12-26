@@ -17,9 +17,6 @@ pub mod raw;
 pub mod term;
 pub mod value;
 
-#[cfg(test)]
-mod tests;
-
 pub type Name = Rc<str>;
 
 pub type SourcePos = std::ops::Range<usize>;

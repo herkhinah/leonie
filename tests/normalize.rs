@@ -1,12 +1,12 @@
-extern crate test;
+#![feature(arc_unwrap_or_clone)]
 
 use std::rc::Rc;
 
 use const_format::concatcp;
 
-use crate::{parser::parse, term::TPrettyPrinter, Cxt};
+use leonie::{parser::parse, term::TPrettyPrinter, Cxt};
 
-const TEST0: &'static str = r#"
+const TEST0: &str = r#"
 let id : (A : _) -> A -> A := λ A x. x
 let List : U -> U := λ A. (L : _) -> (A -> L -> L) -> L -> L
 let nil : (A : _) -> List A := λ A L cons nil. nil
@@ -147,7 +147,6 @@ fn normal_forms() -> Result<(), ()> {
         let raw = parse(input)
             .map_err(|err| {
                 println!("{err:#?}");
-                ()
             })
             .unwrap()
             .unwrap();
