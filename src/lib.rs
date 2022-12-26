@@ -130,6 +130,12 @@ pub mod env {
             (f(self), self.pop().unwrap())
         }
 
+        pub fn reserver_and_eval(&mut self, metas: &mut MetaCxt, term: Term) -> Rc<Value> {
+            self.0.reserve(term.depth().0);
+
+            self.eval(metas, term)
+        }
+
         pub fn eval(&mut self, metas: &mut MetaCxt, term: Term) -> Rc<Value> {
             match term {
                 Term::TV(ix) => self[ix].clone(),
@@ -301,9 +307,9 @@ impl Cxt {
             }
             Raw::RLet(binder_name, binder_type, binder_def, scope) => {
                 let binder_type = self.check(*binder_type, Value::VU.into())?;
-                let v_binder_type = self.env.eval(&mut self.metas, binder_type.clone());
+                let v_binder_type = self.eval(binder_type.clone());
                 let binder_def = self.check(*binder_def, v_binder_type.clone())?;
-                let v_binder_def = self.env.eval(&mut self.metas, binder_def.clone());
+                let v_binder_def = self.eval(binder_def.clone());
                 let scope = self
                     .define(binder_name.clone(), v_binder_def, v_binder_type, |cxt| {
                         cxt.check(*scope, expected_type)
@@ -515,7 +521,7 @@ impl Cxt {
     fn eval(&mut self, term: Term) -> Rc<Value> {
         let Self { env, metas, .. } = self;
 
-        env.eval(metas, term)
+        env.reserver_and_eval(metas, term)
     }
 
     fn fresh_meta(&mut self) -> Term {
