@@ -6,7 +6,7 @@ use std::{fmt::Debug, ops::Deref, rc::Rc};
 use error::{Error, ErrorKind};
 use metas::MetaCxt;
 use raw::Raw;
-use term::{Depth, Term};
+use term::Term;
 use value::{Type, Value};
 
 #[macro_use]
@@ -103,6 +103,10 @@ pub mod env {
     pub struct Env(Vec<Rc<Value>>);
 
     impl Env {
+        pub fn with_capacity(len: usize) -> Self {
+            Self(Vec::with_capacity(len))
+        }
+
         pub fn clone_with_capacity(&self, len: usize) -> Self {
             let mut vec = Vec::with_capacity(self.0.len() + len);
             self.0.clone_into(&mut vec);
@@ -130,7 +134,7 @@ pub mod env {
             (f(self), self.pop().unwrap())
         }
 
-        pub fn reserver_and_eval(&mut self, metas: &mut MetaCxt, term: Term) -> Rc<Value> {
+        pub fn reserve_and_eval(&mut self, metas: &mut MetaCxt, term: Term) -> Rc<Value> {
             self.0.reserve(term.depth().0);
 
             self.eval(metas, term)
@@ -156,8 +160,8 @@ pub mod env {
                     MetaEntry::Unsolved => Value::new_flex(m).into(),
                 },
                 Term::TApp(_, rator, rand) => {
-                    let rator = self.eval(metas, Rc::unwrap_or_clone(rator));
                     let rand = self.eval(metas, Rc::unwrap_or_clone(rand));
+                    let rator = self.eval(metas, Rc::unwrap_or_clone(rator));
 
                     Rc::unwrap_or_clone(rator).app(metas, rand)
                 }
@@ -438,7 +442,7 @@ impl Cxt {
                     inferred_rator_codomain.eval(evaluated_rand, &mut self.metas)
                 };
 
-                let depth = Depth::max(&rator, &checked_rand);
+                let depth = std::cmp::max(rator.depth(), checked_rand.depth());
 
                 (
                     Term::TApp(depth, rator.into(), checked_rand.into()),
@@ -521,7 +525,7 @@ impl Cxt {
     fn eval(&mut self, term: Term) -> Rc<Value> {
         let Self { env, metas, .. } = self;
 
-        env.reserver_and_eval(metas, term)
+        env.reserve_and_eval(metas, term)
     }
 
     fn fresh_meta(&mut self) -> Term {

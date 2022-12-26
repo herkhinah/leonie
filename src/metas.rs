@@ -111,7 +111,8 @@ impl MetaCxt {
     pub fn solve(&mut self, lvl: Lvl, m: MetaVar, sp: Spine, v: Rc<Value>) -> Result<(), Error> {
         let mut p_ren = PartialRenaming::invert(self, lvl, sp)?;
         let rhs = p_ren.rename(self, m, v)?;
-        let solution = Env::default().eval(self, lams(p_ren.dom, rhs));
+        let lams = lams(p_ren.dom, rhs);
+        let solution = Env::with_capacity(lams.depth().0).eval(self, lams);
 
         self[m] = MetaEntry::Solved(Rc::unwrap_or_clone(solution));
         Ok(())

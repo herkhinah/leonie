@@ -6,10 +6,6 @@ use crate::{metas::MetaVar, term::fresh::Fresh, Cxt, Ix, Lvl, Name, Tm, Ty, BD};
 pub struct Depth(pub usize);
 
 impl Depth {
-    pub fn max(t1: &Term, t2: &Term) -> Depth {
-        Self(std::cmp::max(t1.depth().0, t2.depth().0))
-    }
-
     pub fn inc(self) -> Self {
         Self(self.0 + 1)
     }
