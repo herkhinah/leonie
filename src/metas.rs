@@ -45,7 +45,7 @@ impl MetaCxt {
                     let mut v = v.clone();
 
                     for arg in sp.into_iter() {
-                        v = Rc::unwrap_or_clone(v.app(self, arg.into()));
+                        v = Rc::unwrap_or_clone(v.app(self, arg));
                     }
 
                     self.force(v)
@@ -62,7 +62,7 @@ impl MetaCxt {
         }
 
         for (t, t_) in sp.into_iter().zip(sp_.into_iter()) {
-            self.unify(lvl, t.into(), t_.into())?;
+            self.unify(lvl, t, t_)?;
         }
 
         Ok(())
@@ -150,7 +150,7 @@ impl PartialRenaming {
         let dom = spine.len();
 
         for (dom, t) in spine.into_iter().enumerate() {
-            match metas.force(t) {
+            match metas.force(Rc::unwrap_or_clone(t)) {
                 Value::VRigid(x, y) if ren[x.0].is_none() && y.is_empty() => {
                     ren[x.0] = Some(Lvl(dom));
                 }
@@ -214,7 +214,7 @@ impl PartialRenaming {
 
         for u in sp.into_iter() {
             let rator = t;
-            let rand = self.rename(metas, m, u.into())?;
+            let rand = self.rename(metas, m, u)?;
 
             let depth = std::cmp::max(rator.depth(), rand.depth());
 

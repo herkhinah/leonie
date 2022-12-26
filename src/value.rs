@@ -6,13 +6,13 @@ use crate::{
 };
 
 #[derive(Debug, Clone, Default)]
-pub struct Spine(Vec<Value>);
+pub struct Spine(Vec<Rc<Value>>);
 
 impl Spine {
     pub fn quote(mut self, metas: &mut MetaCxt, lvl: Lvl, tm: Term) -> Term {
         if let Some(u) = self.0.pop() {
             let rator = self.quote(metas, lvl, tm);
-            let rand = u.quote(metas, lvl);
+            let rand = Rc::unwrap_or_clone(u).quote(metas, lvl);
             let depth = std::cmp::max(rator.depth(), rand.depth());
 
             Term::TApp(depth, rator.into(), rand.into())
@@ -22,14 +22,14 @@ impl Spine {
     }
 
     pub fn push(&mut self, value: Rc<Value>) {
-        self.0.push(Rc::unwrap_or_clone(value))
+        self.0.push(value)
     }
 }
 
 impl std::iter::IntoIterator for Spine {
-    type Item = Value;
+    type Item = Rc<Value>;
 
-    type IntoIter = std::vec::IntoIter<Value>;
+    type IntoIter = std::vec::IntoIter<Rc<Value>>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.into_iter()
@@ -37,7 +37,7 @@ impl std::iter::IntoIterator for Spine {
 }
 
 impl std::ops::Deref for Spine {
-    type Target = Vec<Value>;
+    type Target = Vec<Rc<Value>>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
