@@ -1,4 +1,4 @@
-use std::{collections::HashMap as Map, rc::Rc};
+use std::rc::Rc;
 
 use crate::{
     error::{Error, ErrorKind},
@@ -109,9 +109,9 @@ impl MetaCxt {
     }
 
     pub fn solve(&mut self, lvl: Lvl, m: MetaVar, sp: Spine, v: Rc<Value>) -> Result<(), Error> {
-        let mut pren = PartialRenaming::invert(self, lvl, sp)?;
-        let rhs = pren.rename(self, m, v)?;
-        let solution = Env::default().eval(self, lams(pren.dom, rhs));
+        let mut p_ren = PartialRenaming::invert(self, lvl, sp)?;
+        let rhs = p_ren.rename(self, m, v)?;
+        let solution = Env::default().eval(self, lams(p_ren.dom, rhs));
 
         self[m] = MetaEntry::Solved(Rc::unwrap_or_clone(solution));
         Ok(())
@@ -125,12 +125,12 @@ pub struct PartialRenaming {
     /// size of Γ
     dom: Lvl,
     /// mapping from Δ vars to Γ vars
-    ren: Map<Lvl, Lvl>,
+    ren: Vec<Option<Lvl>>,
 }
 
 impl PartialRenaming {
     pub fn lift<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
-        self.ren.insert(self.cod, self.dom);
+        self.ren.push(Some(self.dom));
         self.dom = self.dom.inc();
         self.cod = self.cod.inc();
 
@@ -138,19 +138,19 @@ impl PartialRenaming {
 
         self.dom = self.dom.dec();
         self.cod = self.cod.dec();
-        self.ren.remove(&self.cod);
+        self.ren.pop();
 
         res
     }
 
     pub fn invert(metas: &mut MetaCxt, gamma: Lvl, spine: Spine) -> Result<Self, Error> {
-        let mut ren = Map::new();
+        let mut ren = vec![None; gamma.0];
         let dom = spine.len();
 
         for (dom, t) in spine.into_iter().enumerate() {
             match metas.force(t) {
-                Value::VRigid(x, y) if !ren.contains_key(&x) && y.is_empty() => {
-                    ren.insert(x, Lvl(dom));
+                Value::VRigid(x, y) if ren[x.0].is_none() && y.is_empty() => {
+                    ren[x.0] = Some(Lvl(dom));
                 }
                 _ => return Err(error!(ErrorKind::MetaInvert)),
             }
@@ -172,19 +172,23 @@ impl PartialRenaming {
 
                 self.rename_spine(metas, m, Term::TMeta(m_), sp)
             }
-            Value::VRigid(x, sp) => match self.ren.get(&x) {
-                Some(x_) => self.rename_spine(metas, m, Term::TV(x_.as_index(self.dom)), sp),
-                None => Err(error!(ErrorKind::MetaScope(m, Value::VRigid(x, sp)))),
-            },
+            Value::VRigid(x, sp) => {
+                if self.ren.len() > x.0 {
+                    if let Some(x_) = self.ren[x.0] {
+                        return self.rename_spine(metas, m, Term::TV(x_.as_index(self.dom)), sp);
+                    }
+                }
+                Err(error!(ErrorKind::MetaScope(m, Value::VRigid(x, sp))))
+            }
             Value::Vλ(x, t) => {
                 let t = t.eval(Value::new_rigid(self.cod).into(), metas);
-                let t = self.lift(|pren| pren.rename(metas, m, t))?;
+                let t = self.lift(|p_ren| p_ren.rename(metas, m, t))?;
                 Ok(Term::Tλ(x, t.into()))
             }
             Value::VΠ(x, a, b) => {
                 let a = self.rename(metas, m, a)?;
                 let b = b.eval(Value::new_rigid(self.cod).into(), metas);
-                let b = self.lift(|pren| pren.rename(metas, m, b))?;
+                let b = self.lift(|p_ren| p_ren.rename(metas, m, b))?;
 
                 Ok(Term::TΠ(x, a.into(), b.into()))
             }
