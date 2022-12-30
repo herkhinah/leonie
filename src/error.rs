@@ -14,8 +14,9 @@ pub struct Error {
 #[derive(Debug, Clone)]
 pub enum ErrorKind {
     Unbound,
+    Unify,
     MetaOccurs(MetaVar, Value),
-    MetaScope(MetaVar, Value),
+    MetaScope(Value),
     MetaSpine(Spine, Spine),
     MetaInvert,
     MetaUnify(Value, Value),

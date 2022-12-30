@@ -1,6 +1,6 @@
 use std::{ops::Deref, rc::Rc};
 
-use crate::{metas::MetaVar, term::fresh::Fresh, Cxt, Ix, Lvl, Name, Tm, Ty, BD};
+use crate::{metas::MetaVar, term::fresh::Fresh, Cxt, Ix, Lvl, Name, Tm, Ty};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Depth(pub usize);
@@ -16,8 +16,8 @@ pub enum Term {
     Tλ(Depth, Name, Tm),
     TΠ(Depth, Name, Ty, Ty),
     TLet(Depth, Name, Ty, Tm, Tm),
-    TInsertedMeta(MetaVar, Vec<BD>),
     TApp(Depth, Tm, Tm),
+    TAppPruning(MetaVar, Vec<Option<()>>),
     TMeta(MetaVar),
     TV(Ix),
     TU,
@@ -131,17 +131,17 @@ impl<'a> std::fmt::Display for TPrettyPrinter<'a> {
                     print(LET_P, c, f, fresh)
                 }
                 Term::TMeta(m) => write!(f, "?{m}"),
-                Term::TInsertedMeta(m, bds) => {
+                Term::TAppPruning(m, bds) => {
                     let show_parens = || {
                         let mut braces = false;
 
                         for bd in bds {
                             match bd {
-                                BD::Bound => {
+                                Some(()) => {
                                     braces = true;
                                     break;
                                 }
-                                BD::Defined => {}
+                                None => {}
                             }
                         }
 
@@ -152,10 +152,10 @@ impl<'a> std::fmt::Display for TPrettyPrinter<'a> {
                         write!(f, "?{m}")?;
                         for (lvl, bd) in bds.iter().enumerate() {
                             match bd {
-                                BD::Bound => {
+                                Some(()) => {
                                     write!(f, " {}", fresh[Lvl(lvl)])?;
                                 }
-                                BD::Defined => {}
+                                None => {}
                             }
                         }
 
@@ -175,7 +175,7 @@ impl<'a> std::fmt::Display for TPrettyPrinter<'a> {
             }
         }
 
-        let names: Vec<Rc<str>> = cxt.types.iter().map(|x| x.0.clone()).collect();
+        let names: Vec<Rc<str>> = cxt.names.iter().map(|(name, _)| name.clone()).collect();
 
         print(0, t, f, &mut Fresh::new(names))
     }
