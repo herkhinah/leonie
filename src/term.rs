@@ -1,6 +1,7 @@
+use ::bitvec::vec::BitVec;
 use std::{ops::Deref, rc::Rc};
 
-use crate::{metas::MetaVar, term::fresh::Fresh, Cxt, Ix, Lvl, Name, Tm, Ty, BD};
+use crate::{metas::MetaVar, term::fresh::Fresh, Cxt, Ix, Lvl, Name, Tm, Ty};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Depth(pub usize);
@@ -16,8 +17,8 @@ pub enum Term {
     Tλ(Depth, Name, Tm),
     TΠ(Depth, Name, Ty, Ty),
     TLet(Depth, Name, Ty, Tm, Tm),
-    TInsertedMeta(MetaVar, Vec<BD>),
     TApp(Depth, Tm, Tm),
+    TAppPruning(MetaVar, BitVec<usize>),
     TMeta(MetaVar),
     TV(Ix),
     TU,
@@ -30,6 +31,7 @@ impl Term {
             | Term::TΠ(depth, _, _, _)
             | Term::TLet(depth, _, _, _, _)
             | Term::TApp(depth, _, _) => *depth,
+            Term::TAppPruning(_, args) => Depth(args.len()),
             _ => Depth(0),
         }
     }
@@ -131,17 +133,17 @@ impl<'a> std::fmt::Display for TPrettyPrinter<'a> {
                     print(LET_P, c, f, fresh)
                 }
                 Term::TMeta(m) => write!(f, "?{m}"),
-                Term::TInsertedMeta(m, bds) => {
+                Term::TAppPruning(m, bds) => {
                     let show_parens = || {
                         let mut braces = false;
 
-                        for bd in bds {
-                            match bd {
-                                BD::Bound => {
+                        for bound in bds.iter().by_vals() {
+                            match bound {
+                                true => {
                                     braces = true;
                                     break;
                                 }
-                                BD::Defined => {}
+                                false => {}
                             }
                         }
 
@@ -150,12 +152,12 @@ impl<'a> std::fmt::Display for TPrettyPrinter<'a> {
 
                     parenthize(show_parens, f, |f| {
                         write!(f, "?{m}")?;
-                        for (lvl, bd) in bds.iter().enumerate() {
-                            match bd {
-                                BD::Bound => {
+                        for (lvl, bound) in bds.iter().by_vals().enumerate() {
+                            match bound {
+                                true => {
                                     write!(f, " {}", fresh[Lvl(lvl)])?;
                                 }
-                                BD::Defined => {}
+                                false => {}
                             }
                         }
 
@@ -175,7 +177,7 @@ impl<'a> std::fmt::Display for TPrettyPrinter<'a> {
             }
         }
 
-        let names: Vec<Rc<str>> = cxt.types.iter().map(|x| x.0.clone()).collect();
+        let names: Vec<Rc<str>> = cxt.names.iter().map(|(name, _)| name.clone()).collect();
 
         print(0, t, f, &mut Fresh::new(names))
     }

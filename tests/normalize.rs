@@ -30,7 +30,7 @@ let eqTest : Eq _ hundred hundred := refl _ _
 "#;
 
 #[test]
-fn normal_forms() -> Result<(), ()> {
+fn normal_forms() -> Result<(), &'static str> {
     let test_cases = [
         (
             concat!(
@@ -152,7 +152,10 @@ fn normal_forms() -> Result<(), ()> {
             .unwrap();
         let mut cxt = Cxt::default();
 
-        let (term, ty) = cxt.infer(raw).map_err(|_| ()).unwrap();
+        let (term, ty) = cxt.infer(raw).map_err(|err| {
+            println!("{}\n{:#?}", err.backtrace, err.kind);
+            input
+        })?;
 
         let nf_term = format!(
             "{}",
