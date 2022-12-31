@@ -13,7 +13,7 @@ impl Spine {
         if let Some(u) = self.0.pop() {
             let rator = self.quote(metas, lvl, tm);
             let rand = Rc::unwrap_or_clone(u).quote(metas, lvl);
-            let depth = std::cmp::max(rator.depth(), rand.depth());
+            let depth = std::cmp::max(rator.depth().inc(), rand.depth());
 
             Term::TApp(depth, rator.into(), rand.into())
         } else {

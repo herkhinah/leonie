@@ -1,3 +1,4 @@
+use ::bitvec::vec::BitVec;
 use std::{ops::Deref, rc::Rc};
 
 use crate::{metas::MetaVar, term::fresh::Fresh, Cxt, Ix, Lvl, Name, Tm, Ty};
@@ -17,7 +18,7 @@ pub enum Term {
     TΠ(Depth, Name, Ty, Ty),
     TLet(Depth, Name, Ty, Tm, Tm),
     TApp(Depth, Tm, Tm),
-    TAppPruning(MetaVar, Vec<Option<()>>),
+    TAppPruning(MetaVar, BitVec<usize>),
     TMeta(MetaVar),
     TV(Ix),
     TU,
@@ -30,6 +31,7 @@ impl Term {
             | Term::TΠ(depth, _, _, _)
             | Term::TLet(depth, _, _, _, _)
             | Term::TApp(depth, _, _) => *depth,
+            Term::TAppPruning(_, args) => Depth(args.len()),
             _ => Depth(0),
         }
     }
@@ -135,13 +137,13 @@ impl<'a> std::fmt::Display for TPrettyPrinter<'a> {
                     let show_parens = || {
                         let mut braces = false;
 
-                        for bd in bds {
-                            match bd {
-                                Some(()) => {
+                        for bound in bds.iter().by_vals() {
+                            match bound {
+                                true => {
                                     braces = true;
                                     break;
                                 }
-                                None => {}
+                                false => {}
                             }
                         }
 
@@ -150,12 +152,12 @@ impl<'a> std::fmt::Display for TPrettyPrinter<'a> {
 
                     parenthize(show_parens, f, |f| {
                         write!(f, "?{m}")?;
-                        for (lvl, bd) in bds.iter().enumerate() {
-                            match bd {
-                                Some(()) => {
+                        for (lvl, bound) in bds.iter().by_vals().enumerate() {
+                            match bound {
+                                true => {
                                     write!(f, " {}", fresh[Lvl(lvl)])?;
                                 }
-                                None => {}
+                                false => {}
                             }
                         }
 

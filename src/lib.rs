@@ -3,6 +3,7 @@
 
 use std::{fmt::Debug, rc::Rc};
 
+use ::bitvec::vec::BitVec;
 use error::{Error, ErrorKind};
 use metas::MetaCxt;
 use raw::Raw;
@@ -11,7 +12,6 @@ use value::{Type, Value};
 
 #[macro_use]
 pub mod error;
-pub mod bitvec;
 pub mod metas;
 pub mod parser;
 pub mod raw;
@@ -122,6 +122,7 @@ pub mod env {
             self.0.iter()
         }
 
+        #[inline(always)]
         pub fn eval_under_binder<T>(
             &mut self,
             value: Rc<Value>,
@@ -169,16 +170,16 @@ pub mod env {
                     match &metas[m] {
                         MetaEntry::Solved(val, _) => {
                             let mut val = val.clone();
-                            for (t, bds) in self.iter().zip(bds.into_iter()) {
-                                if let Some(()) = bds {
+                            for (idx, t) in self.iter().enumerate() {
+                                if bds[idx] {
                                     val = Rc::unwrap_or_clone(val.app(metas, t.clone()));
                                 }
                             }
                             val.into()
                         }
                         MetaEntry::Unsolved(_) => {
-                            for (t, bds) in self.iter().cloned().zip(bds.into_iter()) {
-                                if let Some(()) = bds {
+                            for (idx, t) in self.iter().cloned().enumerate() {
+                                if bds[idx] {
                                     args.push(t.clone());
                                 }
                             }
@@ -227,7 +228,7 @@ pub struct Cxt {
     /// used for unification
     lvl: Lvl,
     /// mask of bound variables
-    pruning: Vec<Option<()>>,
+    pruning: BitVec<usize>,
     /// getting types of fresh metas
     locals: Vec<Local>,
     /// names used for lookup during elaboration
@@ -268,7 +269,7 @@ impl Cxt {
         self.lvl = self.lvl.inc();
         self.locals
             .push(Local::Bound(var_name.clone(), var_type.into()));
-        self.pruning.push(Some(()));
+        self.pruning.push(true);
         self.names.push((var_name, v_var_type));
         let res = scope(self);
 
@@ -295,7 +296,7 @@ impl Cxt {
         self.names.push((binder_name.clone(), v_binder_type));
         self.locals
             .push(Local::Defined(binder_name, binder_type, binder_def));
-        self.pruning.push(None);
+        self.pruning.push(false);
 
         let res = scope(self);
 
@@ -342,7 +343,10 @@ impl Cxt {
 
                 let scope = scope?;
 
-                let depth = std::cmp::max(binder_def.depth(), scope.depth().inc());
+                let depth = std::cmp::max(
+                    std::cmp::max(binder_def.depth(), scope.depth().inc()),
+                    binder_type.depth(),
+                );
 
                 Ok(Term::TLet(
                     depth,
@@ -468,7 +472,7 @@ impl Cxt {
                     inferred_rator_codomain.eval(evaluated_rand, &mut self.metas)
                 };
 
-                let depth = std::cmp::max(rator.depth(), checked_rand.depth());
+                let depth = std::cmp::max(rator.depth().inc(), checked_rand.depth());
 
                 (
                     Term::TApp(depth, rator.into(), checked_rand.into()),

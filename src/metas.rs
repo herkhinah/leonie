@@ -1,3 +1,4 @@
+use ::bitvec::vec::BitVec;
 use std::rc::Rc;
 
 use crate::{
@@ -38,7 +39,7 @@ impl MetaCxt {
         m
     }
 
-    pub fn fresh_meta_term(&mut self, ty: VTy, bds: Vec<Option<()>>) -> Term {
+    pub fn fresh_meta_term(&mut self, ty: VTy, bds: BitVec<usize>) -> Term {
         let m = self.0.len();
         self.0.push(MetaEntry::Unsolved(ty));
         Term::TAppPruning(m, bds)
@@ -90,30 +91,29 @@ impl MetaCxt {
             return Err(error!(ErrorKind::Unify));
         }
 
-        let mut prune = false;
+        let mut prune = Ok(false);
+        let mut pr = BitVec::new();
 
-        match sp
-            .iter()
-            .rev()
-            .zip(sp_.iter().rev())
-            .map(
-                |(t, t_)| match (self.forced_is_var(t), self.forced_is_var(t_)) {
-                    (Some(x), Some(x_)) => {
-                        if x == x_ {
-                            Ok(Some(()))
-                        } else {
-                            prune = true;
-                            Ok(None)
-                        }
+        for (t, t_) in sp.iter().rev().zip(sp_.iter().rev()) {
+            match (self.forced_is_var(t), self.forced_is_var(t_)) {
+                (Some(x), Some(x_)) => {
+                    if x == x_ {
+                        pr.push(true);
+                    } else {
+                        prune = Ok(true);
+                        pr.push(false);
                     }
-                    _ => Err(()),
-                },
-            )
-            .collect::<Result<Vec<Option<()>>, ()>>()
-        {
+                }
+                _ => {
+                    prune = Err(());
+                    break;
+                }
+            }
+        }
+        match prune {
             Ok(pren) => {
-                if prune {
-                    Prune(pren).prune_meta(self, m).map(|_| ())
+                if pren {
+                    Prune(pr).prune_meta(self, m).map(|_| ())
                 } else {
                     Ok(())
                 }
@@ -174,7 +174,7 @@ impl MetaCxt {
     pub fn solve_with_pren(
         &mut self,
         m: MetaVar,
-        (mut pren, prune_non_linear): (PartialRenaming, Option<Prune<()>>),
+        (mut pren, prune_non_linear): (PartialRenaming, Option<Prune>),
         rhs: Value,
     ) -> Result<(), Error> {
         let m_ty = match &self[m] {
@@ -248,6 +248,7 @@ impl PartialRenaming {
         self.cod = self.cod.inc();
     }
 
+    #[inline(always)]
     pub fn lift_with<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
         self.ren.push(Some(self.dom));
         self.dom = self.dom.inc();
@@ -262,6 +263,7 @@ impl PartialRenaming {
         res
     }
 
+    #[inline(always)]
     pub fn skip_with<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
         self.ren.push(None);
         self.cod = self.cod.inc();
@@ -278,13 +280,13 @@ impl PartialRenaming {
         metas: &mut MetaCxt,
         gamma: Lvl,
         spine: &Spine,
-    ) -> Result<(Self, Option<Prune<()>>), Error> {
+    ) -> Result<(Self, Option<Prune>), Error> {
         let mut ren = vec![None; gamma.0 + 1];
         ren.pop();
         let dom = spine.len();
 
         let mut is_linear = true;
-        let mut pr = Vec::with_capacity(spine.len());
+        let mut pr = BitVec::with_capacity(spine.len());
         let mut domvars = vec![None; gamma.0];
 
         for (dom, t) in spine.iter().enumerate() {
@@ -293,11 +295,11 @@ impl PartialRenaming {
                     if domvars[x.0].is_some() {
                         is_linear = false;
                         ren[x.0] = None;
-                        pr.push(None);
+                        pr.push(false);
                     } else {
                         domvars[x.0] = Some(());
                         ren[x.0] = Some(Lvl(dom));
-                        pr.push(Some(()));
+                        pr.push(true);
                     }
                 }
                 _ => return Err(error!(ErrorKind::MetaInvert)),
@@ -356,6 +358,7 @@ impl PartialRenaming {
         }
     }
 
+    #[inline(always)]
     fn rename_spine(&mut self, metas: &mut MetaCxt, mut t: Term, sp: Spine) -> Result<Term, Error> {
         if sp.is_empty() {
             return Ok(t);
@@ -365,7 +368,7 @@ impl PartialRenaming {
             let rator = t;
             let rand = self.rename(metas, u)?;
 
-            let depth = std::cmp::max(rator.depth(), rand.depth());
+            let depth = std::cmp::max(rator.depth().inc(), rand.depth());
 
             t = Term::TApp(depth, rator.into(), rand.into());
         }
@@ -382,20 +385,20 @@ impl PartialRenaming {
 
         let mut status = PruneStatus::OKRenaming;
 
-        let mut pr = Vec::with_capacity(sp.len());
+        let mut pr = BitVec::with_capacity(sp.len());
         let mut pruned_spine = Vec::with_capacity(sp.len());
 
         for t in sp.into_iter().rev() {
             match metas.forced_is_var(t.as_ref()) {
                 Some(x) => match (self.lookup(x), &status) {
                     (Some(x), _) => {
-                        pr.push(Some(()));
+                        pr.push(true);
                         pruned_spine.push(Term::TV(x.as_index(self.dom)));
                     }
                     (None, PruneStatus::OKNonRenaming) => return Err(error!(ErrorKind::Unify)),
                     (None, _) => {
                         status = PruneStatus::NeedsPruning;
-                        pr.push(None)
+                        pr.push(false)
                     }
                 },
                 None => match &status {
@@ -403,7 +406,7 @@ impl PartialRenaming {
                     _ => {
                         status = PruneStatus::OKNonRenaming;
                         let t = self.rename(metas, t)?;
-                        pr.push(Some(()));
+                        pr.push(true);
                         pruned_spine.push(t);
                     }
                 },
@@ -419,25 +422,30 @@ impl PartialRenaming {
         };
 
         for arg in pruned_spine.into_iter() {
-            let depth = std::cmp::max(arg.depth(), term.depth());
+            let depth = std::cmp::max(arg.depth(), term.depth().inc());
             term = Term::TApp(depth, term.into(), arg.into());
         }
 
         Ok(term)
     }
+
+    pub(crate) fn skip(&mut self) {
+        self.ren.push(None);
+        self.cod = self.cod.inc();
+    }
 }
 
-#[derive(Debug)]
-pub struct Prune<T>(Vec<Option<T>>);
+#[derive(Debug, Clone)]
+pub struct Prune(BitVec<usize>);
 
-impl Prune<()> {
+impl Prune {
     pub fn prune_meta(self, metas: &mut MetaCxt, m: MetaVar) -> Result<MetaVar, Error> {
         let mty = match &metas[m] {
             MetaEntry::Solved(_, _) => panic!(),
             MetaEntry::Unsolved(a) => a.clone(),
         };
 
-        let pruned_tm = self.prune_type(metas, mty.clone())?;
+        let pruned_tm = self.clone().prune_type(metas, mty.clone())?;
         let depth = pruned_tm.depth();
 
         let pruned_ty = Env::with_capacity(depth.0).eval(metas, pruned_tm);
@@ -452,38 +460,45 @@ impl Prune<()> {
         Ok(m_)
     }
 
-    pub fn prune_type(&self, metas: &mut MetaCxt, ty: VTy) -> Result<Term, Error> {
+    pub fn prune_type(mut self, metas: &mut MetaCxt, ty: VTy) -> Result<Term, Error> {
         let mut pren = PartialRenaming::empty();
 
         fn prune(
-            pr: &[Option<()>],
+            pr: &mut BitVec<usize>,
             metas: &mut MetaCxt,
             pren: &mut PartialRenaming,
-            ty: Rc<Value>,
+            mut ty: Rc<Value>,
         ) -> Result<Term, Error> {
-            match (pr, metas.force(Rc::unwrap_or_clone(ty))) {
-                ([], a) => pren.rename(metas, a.into()),
-                ([head @ .., Some(_)], Value::VΠ(x, a, b)) => {
-                    let a = pren.rename(metas, a)?;
-                    let v = Value::VRigid(pren.cod, Spine::default());
-                    let b = b.eval(v.into(), metas);
-                    pren.lift_with(|pren| {
-                        let b = prune(head, metas, pren, b)?;
+            let mut vec = Vec::with_capacity(pr.len());
 
-                        let depth = std::cmp::max(a.depth(), b.depth());
-
-                        Ok(Term::TΠ(depth, x, a.into(), b.into()))
-                    })
+            for prune in pr.iter().by_vals() {
+                match (prune, metas.force(Rc::unwrap_or_clone(ty))) {
+                    (true, Value::VΠ(x, a, b)) => {
+                        let a = pren.rename(metas, a)?;
+                        let v = Value::VRigid(pren.cod, Spine::default());
+                        vec.push((x, a));
+                        ty = b.eval(v.into(), metas);
+                        pren.lift();
+                    }
+                    (false, Value::VΠ(_, _, b)) => {
+                        ty = b.eval(Value::VRigid(pren.cod, Spine::default()).into(), metas);
+                        pren.skip();
+                    }
+                    _ => panic!(),
                 }
-                ([head @ .., None], Value::VΠ(_, _, b)) => {
-                    let b = b.eval(Value::VRigid(pren.cod, Spine::default()).into(), metas);
-                    pren.skip_with(|pren| prune(head, metas, pren, b))
-                }
-                (pr, a) => panic!("{pr:#?} {a:#?}"),
             }
+
+            let mut term = pren.rename(metas, ty)?;
+
+            for (name, ty) in vec.into_iter().rev() {
+                let depth = std::cmp::max(ty.depth(), term.depth().inc());
+                term = Term::TΠ(depth, name, ty.into(), term.into());
+            }
+
+            Ok(term)
         }
 
-        prune(&self.0, metas, &mut pren, ty)
+        prune(&mut self.0, metas, &mut pren, ty)
     }
 }
 
