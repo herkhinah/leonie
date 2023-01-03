@@ -1,15 +1,18 @@
 use std::{collections::HashSet, ops::Range, rc::Rc};
 
-use chumsky::{prelude::*, BoxStream, Flat};
+use chumsky::{
+    zero_copy::{error::Error, prelude::*},
+    BoxStream, Flat,
+};
 
 use crate::Raw;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Token {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Token<'a> {
     Open(Delim),
     Close(Delim),
     Ctrl(&'static str),
-    Var(String),
+    Var(&'a str),
 }
 
 type Span = Range<usize>;
@@ -21,25 +24,26 @@ pub enum Delim {
     Block,
 }
 
-#[derive(Debug)]
-enum TokenTree {
-    Token(Token),
-    Tree(Delim, Vec<(TokenTree, Span)>),
+#[derive(Debug, Clone)]
+enum TokenTree<'a> {
+    Token(Token<'a>),
+    Tree(Delim, Vec<(TokenTree<'a>, Span)>),
 }
 
 #[must_use]
-pub fn ident<C: chumsky::text::Character, E: chumsky::Error<C>>(
-) -> impl Parser<C, C::Collection, Error = E> + Copy + Clone {
-    filter(|c: &C| c.to_char().is_alphabetic())
-        .map(Some)
-        .chain::<C, Vec<_>, _>(
-            filter(|c: &C| c.to_char().is_ascii_alphanumeric() || c.to_char() == '_').repeated(),
+pub fn ident<'a, E: Error<str>>() -> impl Parser<'a, str, &'a str, E> {
+    any()
+        .filter(|c: &char| c.is_alphabetic())
+        .then(
+            any()
+                .filter(|c: &char| c.is_ascii_alphanumeric() || *c == '_')
+                .repeated(),
         )
-        .chain::<C, Vec<_>, _>(filter(|c: &C| c.to_char() == '\'').repeated())
-        .collect()
+        .then(any().filter(|c: &char| *c == '\'').repeated())
+        .map_slice(|s: &str| s)
 }
 
-fn lexer() -> impl Parser<char, Vec<(TokenTree, Span)>, Error = Simple<char>> {
+fn lexer<'a, E: Error<str> + 'a>() -> impl Parser<'a, str, Vec<(TokenTree<'a>, Span)>, E> {
     let tt = recursive(|tt| {
         // Define some atomic tokens
         let ident = ident().map(Token::Var);
@@ -63,6 +67,7 @@ fn lexer() -> impl Parser<char, Vec<(TokenTree, Span)>, Error = Simple<char>> {
         let token_tree = tt
             .padded()
             .repeated()
+            .collect()
             .delimited_by(just('('), just(')'))
             .map(|tts| TokenTree::Tree(Delim::Paren, tts));
 
@@ -77,10 +82,10 @@ fn lexer() -> impl Parser<char, Vec<(TokenTree, Span)>, Error = Simple<char>> {
 }
 
 /// Flatten a series of token trees into a single token stream, ready for feeding into the main parser
-fn tts_to_stream(
+fn tts_to_stream<'a>(
     eoi: Span,
-    token_trees: Vec<(TokenTree, Span)>,
-) -> BoxStream<'static, Token, Span> {
+    token_trees: Vec<(TokenTree<'a>, Span)>,
+) -> BoxStream<'a, Token<'a>, Span> {
     use std::iter::once;
 
     BoxStream::from_nested(eoi, token_trees.into_iter(), |(tt, span)| match tt {
@@ -95,20 +100,24 @@ fn tts_to_stream(
     })
 }
 
-pub fn parse(input: &str) -> Result<Option<Raw>, Vec<Simple<Token>>> {
-    let tts = lexer().parse(input).unwrap();
+pub fn parse<'a, E: Error<[(Token<'a>, Range<usize>)]> + std::fmt::Debug + 'a>(
+    input: &'a str,
+) -> Result<Option<Raw>, Vec<E>> {
+    let tts = lexer::<'a, Rich<str>>().parse(input).0.unwrap();
 
     // Next, flatten
     let eoi = 0..input.chars().count();
-    let token_stream = tts_to_stream(eoi, tts);
+    let mut token_stream = tts_to_stream(eoi, tts);
 
     // At this point, we have a token stream that can be fed into the main parser! Because this is just an example,
     // we're instead going to just collect the token stream into a vector and print it.
 
     //let flattened_trees = token_stream.fetch_tokens().collect::<Vec<_>>();
 
-    let parser = parse_block();
-    let (raw, errors) = parser.parse_recovery(token_stream);
+    let tokens = token_stream.fetch_tokens().collect::<Vec<_>>();
+
+    let parser = parse_block::<E>();
+    let (raw, errors) = parser.parse(&tokens);
 
     if !errors.is_empty() {
         return Err(errors);
@@ -117,14 +126,37 @@ pub fn parse(input: &str) -> Result<Option<Raw>, Vec<Simple<Token>>> {
     Ok(raw)
 }
 
-pub fn parse_block() -> impl Parser<Token, Raw, Error = Simple<Token>> {
+pub fn parse_block<'a, 'b, E: Error<[(Token<'a>, Span)]> + 'a>(
+) -> impl Parser<'b, [(Token<'a>, Span)], Raw, E>
+where
+    'a: 'b,
+{
     let keywords = HashSet::from(["let", "U"]);
 
+    let just = |expected: Token<'static>| any().filter(move |(found, _)| *found == expected);
+
     let ctrl = |ctrl: &'static str| just(Token::Ctrl(ctrl));
-    let p_ident = select! { Token::Var(name) if !keywords.contains(name.as_str()) && !name.as_str().starts_with('_') => Into::<Rc<str>>::into(name) };
+    let p_ident =
+        any::<[(Token<'a>, Span)], _, ()>().try_map(move |(tok, _span), span| match tok {
+            Token::Var(name) if !keywords.contains(name) && !name.starts_with('_') => {
+                Ok(Into::<Rc<str>>::into(name))
+            }
+            found => Err(E::expected_found(
+                vec![Some((Token::Var("identifier"), _span))],
+                Some((found, span.clone())),
+                span,
+            )),
+        });
     let p_var = p_ident.clone().map(Raw::RVar);
     let p_hole = ctrl("_").map(|_| Raw::RHole);
-    let p_u = select! { Token::Var(name) if name.as_str() == "U" => Raw::RU };
+    let p_u = any().try_map(|(tok, _span): (Token<'a>, Span), span| match tok {
+        Token::Var(name) if name == "U" => Ok(Raw::RU),
+        found => Err(E::expected_found(
+            [Some((Token::Var("U"), _span.clone()))],
+            Some((found, _span)),
+            span,
+        )),
+    });
     let p_binder = p_ident.clone().or(ctrl("_").map(|_| "_".into()));
 
     let mut p_raw = Recursive::declare();
@@ -140,11 +172,14 @@ pub fn parse_block() -> impl Parser<Token, Raw, Error = Simple<Token>> {
             just(Token::Open(Delim::Paren)),
             just(Token::Close(Delim::Paren)),
         ));
-    let p_spine = p_atom.clone().then(p_atom.repeated()).map(|(head, spine)| {
-        spine
-            .into_iter()
-            .fold(head, |acc, arg| Raw::RApp(acc.into(), arg.into()))
-    });
+    let p_spine = p_atom
+        .clone()
+        .then(p_atom.repeated().collect::<Vec<_>>())
+        .map(|(head, spine)| {
+            spine
+                .into_iter()
+                .fold(head, |acc, arg| Raw::RApp(acc.into(), arg.into()))
+        });
 
     let p_arrow_r = ctrl("→").or(ctrl("->"));
 
@@ -156,7 +191,7 @@ pub fn parse_block() -> impl Parser<Token, Raw, Error = Simple<Token>> {
         });
 
     let p_lam = ctrl("λ")
-        .ignore_then(p_binder.clone().repeated().at_least(1))
+        .ignore_then(p_binder.clone().repeated().at_least(1).collect::<Vec<_>>())
         .then_ignore(ctrl("."))
         .then(p_raw.clone())
         .map(|(x, t)| {
@@ -164,7 +199,7 @@ pub fn parse_block() -> impl Parser<Token, Raw, Error = Simple<Token>> {
                 .rev()
                 .fold(t, |body, arg| Raw::RLam(arg, body.into()))
         });
-    let p_let = just(Token::Var("let".to_string()))
+    let p_let = just(Token::Var("let"))
         .ignore_then(p_binder.clone())
         .then_ignore(ctrl(":"))
         .then(p_raw.clone())

@@ -6,9 +6,9 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-anyhow = { version = "1.0.66", features = ["backtrace"] }
+anyhow = { version = "1.0.68", features = ["backtrace"] }
 bitvec = "1.0.1"
-chumsky = { git = "https://github.com/zesterer/chumsky/" }
+chumsky = { git = "https://github.com/herkhinah/chumsky.git", branch = "shekhinah/cherry-pick", features = [ "nightly" ] }
 
 [dev-dependencies]
 criterion = "0.4.0"
