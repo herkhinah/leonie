@@ -1,14 +1,19 @@
-#![feature(arc_unwrap_or_clone)]
-#![feature(test)]
+#![feature(arc_unwrap_or_clone, allocator_api)]
 
-use std::{fmt::Debug, rc::Rc};
+pub mod lexer;
+pub mod parser;
+pub mod raw;
 
+
+/*
 use ::bitvec::vec::BitVec;
 use error::{Error, ErrorKind};
 use metas::MetaCxt;
 use raw::Raw;
 use term::Term;
 use value::{Type, Value};
+
+
 
 #[macro_use]
 pub mod error;
@@ -589,3 +594,4 @@ impl Cxt {
         metas.fresh_meta_term(ty, pruning.clone())
     }
 }
+*/

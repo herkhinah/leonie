@@ -5,10 +5,17 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+
+[features]
+parser_debug = [ "dep:ansi_term" ]
+
 [dependencies]
+ansi_term = { verison = "0.12.1", optional = true }
 anyhow = { version = "1.0.68", features = ["backtrace"] }
+ariadne = "0.1.5"
 bitvec = "1.0.1"
-chumsky = { git = "https://github.com/herkhinah/chumsky.git", branch = "shekhinah/cherry-pick", features = [ "nightly" ] }
+bumpalo = { version = "3.11.1", features = ["allocator_api"] }
+chumsky = { git = "https://github.com/herkhinah/chumsky.git", branch = "shekhinah/span", features = [ "nightly" ] }
 
 [dev-dependencies]
 criterion = "0.4.0"

@@ -1,231 +1,326 @@
-use std::{collections::HashSet, ops::Range, rc::Rc};
+use std::marker::PhantomData;
+use std::ops::Range;
+use std::sync::atomic::{AtomicU64, AtomicUsize};
 
-use chumsky::{
-    zero_copy::{error::Error, prelude::*},
-    BoxStream, Flat,
+use bumpalo::Bump;
+use chumsky::zero_copy::error::Error;
+use chumsky::zero_copy::input::{Input, InputRef};
+use chumsky::zero_copy::internal::{Check, Emit, Mode};
+use chumsky::zero_copy::{prelude::*, recursive::Direct};
+
+use crate::lexer::*;
+use crate::raw::{
+    self,
+    Raw::{self, *},
 };
 
-use crate::Raw;
+use Delim::*;
+use Token::*;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Token<'a> {
-    Open(Delim),
-    Close(Delim),
-    Ctrl(&'static str),
-    Var(&'a str),
-}
+pub type TokenInput<'a> = [Token<'a>];
 
-type Span = Range<usize>;
+type RawExprParser<'a, 'arena, 'b> =
+    Recursive<dyn Parser<'a, TokenInput<'a>, Raw<'arena>, ()> + 'b>;
+pub type RawLocalScopeParser<'a, 'arena: 'a, 'b> =
+    Recursive<dyn Parser<'a, TokenInput<'a>, Raw<'arena>, ()> + 'b>;
 
-// Represents the different kinds of delimiters we care about
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub enum Delim {
-    Paren,
-    Block,
-}
+pub fn raw_local_scope<'a, 'arena, 'b>(
+    bump: &'arena Bump,
+) -> Recursive<Direct<'b, TokenInput<'a>, Raw<'arena>, ()>>
+where
+    'arena: 'b,
+    'a: 'b + 'arena,
+{
+    recursive(|raw_local_scope| {
+        let mut raw_application = Recursive::declare();
+        let mut raw_expr = Recursive::declare();
+        let mut raw_type_expr = Recursive::declare();
 
-#[derive(Debug, Clone)]
-enum TokenTree<'a> {
-    Token(Token<'a>),
-    Tree(Delim, Vec<(TokenTree<'a>, Span)>),
-}
+        parser!(arrow, just(Ctrl("->")).or(just(Ctrl("→"))));
 
-#[must_use]
-pub fn ident<'a, E: Error<str>>() -> impl Parser<'a, str, &'a str, E> {
-    any()
-        .filter(|c: &char| c.is_alphabetic())
-        .then(
-            any()
-                .filter(|c: &char| c.is_ascii_alphanumeric() || *c == '_')
-                .repeated(),
-        )
-        .then(any().filter(|c: &char| *c == '\'').repeated())
-        .map_slice(|s: &str| s)
-}
+        parser!(
+            raw_identifier,
+            any().try_map(move |token, span: Range<usize>| match token {
+                Ident(ident) => Ok(RSrcPos(
+                    (span.start, span.end),
+                    bump.alloc(RIdentifier(ident)),
+                )),
+                found => Err(()),
+            })
+        );
+        parser!(
+            raw_universe,
+            just::<Token<'a>, TokenInput<'a>, (), ()>(Ident("U")).map(|_| RU)
+        );
 
-fn lexer<'a, E: Error<str> + 'a>() -> impl Parser<'a, str, Vec<(TokenTree<'a>, Span)>, E> {
-    let tt = recursive(|tt| {
-        // Define some atomic tokens
-        let ident = ident().map(Token::Var);
-        let ctrl = just("->")
-            .or(just("<-"))
-            .or(just("=="))
-            .or(just(":="))
-            .or(just("λ"))
-            .or(just("Π"))
-            .or(just("."))
-            .or(just("\\"))
-            .or(just("_"))
-            .or(just(":"))
-            .or(just("\n"))
-            .or(just("="))
-            .map(Token::Ctrl);
+        parser!(
+            raw_named_argument,
+            just::<Token<'a>, TokenInput<'a>, (), ()>(Open(Delim::Paren('(')))
+                .ignore_then(
+                    raw_identifier
+                        .clone()
+                        .repeated()
+                        .at_least(1)
+                        .collect::<Vec<_>>(),
+                )
+                .then_ignore(just(Ctrl(":")))
+                .then(raw_type_expr.clone())
+                .then_ignore(just(Close(Delim::Paren('('))))
+                .map(|(args, ty)| {
+                    let args = bump.alloc_slice_copy(&args);
+                    RTypedArgList {
+                        names: args,
+                        ty: bump.alloc(ty),
+                    }
+                })
+        );
 
-        let single_token = ctrl.or(ident).map(TokenTree::Token);
+        parser!(raw_hole, just(Ctrl("_")).map(|_| RHole));
 
-        // Tokens surrounded by parentheses get turned into parenthesised token trees
-        let token_tree = tt
-            .padded()
-            .repeated()
-            .collect()
-            .delimited_by(just('('), just(')'))
-            .map(|tts| TokenTree::Tree(Delim::Paren, tts));
+        parser!(
+            atom,
+            raw_identifier
+                .clone()
+                .or(raw_hole.clone())
+                .or(raw_universe.clone())
+                .or(raw_expr
+                    .clone()
+                    .delimited_by(just(Open(Paren('('))), just(Close(Paren('(')))))
+        );
 
-        single_token
-            .or(token_tree)
-            .map_with_span(|tt, span| (tt, span))
-    });
+        parser!(
+            type_atom,
+            raw_identifier
+                .clone()
+                .or(raw_hole.clone())
+                .or(raw_universe)
+                .or(raw_type_expr
+                    .clone()
+                    .delimited_by(just(Open(Paren('('))), just(Close(Paren('(')))))
+        );
 
-    // Whitespace indentation creates code block token trees
-    text::semantic_indentation(tt, |tts, span| (TokenTree::Tree(Delim::Block, tts), span))
-        .then_ignore(end())
-}
+        parser!(unnamed_argument, raw_application.clone().or(atom.clone()));
 
-/// Flatten a series of token trees into a single token stream, ready for feeding into the main parser
-fn tts_to_stream<'a>(
-    eoi: Span,
-    token_trees: Vec<(TokenTree<'a>, Span)>,
-) -> BoxStream<'a, Token<'a>, Span> {
-    use std::iter::once;
+        parser!(
+            raw_lambda,
+            just::<Token<'a>, TokenInput<'a>, (), ()>(Ctrl("λ"))
+                .or(just(Ctrl("\\")))
+                .ignore_then(
+                    raw_identifier
+                        .clone()
+                        .or(raw_named_argument.clone())
+                        .repeated()
+                        .at_least(1)
+                        .collect::<Vec<_>>(),
+                )
+                .then_ignore(just(Ctrl(".")))
+                .then(raw_expr.clone())
+                .map(|(identifier, expr)| {
+                    let args = bump.alloc_slice_copy(&identifier);
+                    RLambda {
+                        args,
+                        expr: bump.alloc(expr),
+                    }
+                })
+        );
 
-    BoxStream::from_nested(eoi, token_trees.into_iter(), |(tt, span)| match tt {
-        // Single tokens remain unchanged
-        TokenTree::Token(token) => Flat::Single((token, span)),
-        // Nested token trees get flattened into their inner contents, surrounded by `Open` and `Close` tokens
-        TokenTree::Tree(delim, tree) => Flat::Many(
-            once((TokenTree::Token(Token::Open(delim)), span.clone()))
-                .chain(tree.into_iter())
-                .chain(once((TokenTree::Token(Token::Close(delim)), span))),
-        ),
+        parser!(
+            raw_pi,
+            just::<Token<'a>, TokenInput<'a>, (), ()>(Ctrl("Π"))
+                .or_not()
+                .ignore_then(
+                    raw_named_argument
+                        .clone()
+                        .separated_by(arrow.clone().or_not())
+                        .at_least(1)
+                        .collect::<Vec<_>>()
+                        .or(unnamed_argument.map(|arg| vec![arg])),
+                )
+                .then_ignore(arrow)
+                .then(raw_type_expr.clone())
+                .map(|(domain, target)| {
+                    let args = bump.alloc_slice_copy(&domain);
+                    RPi {
+                        args,
+                        target: bump.alloc(target),
+                    }
+                })
+        );
+
+        parser!(
+            let_binder,
+            just::<Token<'a>, TokenInput<'a>, (), ()>(Ident("let"))
+                .ignore_then(raw_identifier.clone())
+                .then(just(Ctrl(":")).ignore_then(raw_type_expr.clone()).or_not())
+                .then_ignore(just(Ctrl(":=")))
+                .then(raw_expr.clone())
+        );
+
+        parser!(
+            raw_let,
+            let_binder
+                .then_ignore(just(Ctrl("\n")).repeated().at_least(1))
+                .then(raw_local_scope)
+                .map(|(((ident, ty), def), scope)| RLet {
+                    name: bump.alloc(ident),
+                    ty: ty.map(|ty| &*bump.alloc(ty)),
+                    definition: bump.alloc(def),
+                    scope: bump.alloc(scope),
+                })
+        );
+
+        parser!(
+            raw_local_scope,
+            just(Ctrl("\n")).repeated().ignore_then(
+                raw_let
+                    .or(raw_expr.clone())
+                    .then_ignore(just(Ctrl("\n")).repeated())
+                    .then_ignore(end())
+            )
+        );
+
+        recursive_parser!(
+            raw_type_expr,
+            raw_pi
+                .or(raw_application.clone())
+                .or(type_atom)
+                .or(raw_type_expr
+                    .clone()
+                    .delimited_by(just(Open(Paren('('))), just(Close(Paren('(')))))
+        );
+
+        recursive_parser!(
+            raw_application,
+            atom.clone()
+                .then(atom.repeated().at_least(1).collect::<Vec<_>>())
+                .map(|(rator, rand)| RApplication(bump.alloc(rator), bump.alloc_slice_copy(&rand)))
+        );
+
+        recursive_parser!(
+            raw_expr,
+            raw_lambda.clone().or(raw_type_expr.clone()).or(raw_expr
+                .clone()
+                .delimited_by(just(Open(Paren('('))), just(Close(Paren('(')))))
+        );
+
+        raw_local_scope
     })
 }
 
-pub fn parse<'a, E: Error<[(Token<'a>, Range<usize>)]> + std::fmt::Debug + 'a>(
-    input: &'a str,
-) -> Result<Option<Raw>, Vec<E>> {
-    let tts = lexer::<'a, Rich<str>>().parse(input).0.unwrap();
+macro_rules! parser {
+    ($name:ident, $def:expr) => {
+        #[cfg(feature = "parser_debug")]
+        use $crate::debug::ParserDebug;
 
-    // Next, flatten
-    let eoi = 0..input.chars().count();
-    let mut token_stream = tts_to_stream(eoi, tts);
-
-    // At this point, we have a token stream that can be fed into the main parser! Because this is just an example,
-    // we're instead going to just collect the token stream into a vector and print it.
-
-    //let flattened_trees = token_stream.fetch_tokens().collect::<Vec<_>>();
-
-    let tokens = token_stream.fetch_tokens().collect::<Vec<_>>();
-
-    let parser = parse_block::<E>();
-    let (raw, errors) = parser.parse(&tokens);
-
-    if !errors.is_empty() {
-        return Err(errors);
-    }
-
-    Ok(raw)
+        #[cfg(feature = "parser_debug")]
+        let $name = $def.debug(stringify!($name));
+        #[cfg(not(feature = "parser_debug"))]
+        let $name = $def;
+    };
 }
 
-pub fn parse_block<'a, 'b, E: Error<[(Token<'a>, Span)]> + 'a>(
-) -> impl Parser<'b, [(Token<'a>, Span)], Raw, E>
-where
-    'a: 'b,
-{
-    let keywords = HashSet::from(["let", "U"]);
+macro_rules! recursive_parser {
+    ($name:ident, $def:expr) => {
+        #[cfg(feature = "parser_debug")]
+        use $crate::debug::ParserDebug;
+        #[cfg(feature = "parser_debug")]
+        $name.define($def.debug(stringify!($name)));
+        #[cfg(not(feature = "parser_debug"))]
+        $name.define($def);
+    };
+}
 
-    let just = |expected: Token<'static>| any().filter(move |(found, _)| *found == expected);
+pub(crate) use parser;
+pub(crate) use recursive_parser;
 
-    let ctrl = |ctrl: &'static str| just(Token::Ctrl(ctrl));
-    let p_ident =
-        any::<[(Token<'a>, Span)], _, ()>().try_map(move |(tok, _span), span| match tok {
-            Token::Var(name) if !keywords.contains(name) && !name.starts_with('_') => {
-                Ok(Into::<Rc<str>>::into(name))
+#[cfg(feature = "parser_debug")]
+mod debug {
+
+    static DEBUG_LEVEL: AtomicUsize = AtomicUsize::new(0usize);
+
+    #[derive(Clone)]
+    struct DebugParser<'a, P, O, E, S> {
+        inner: P,
+        debug_msg: &'static str,
+        phantom: PhantomData<&'a (O, E, S)>,
+    }
+
+    trait ParserDebug<'a, P, I: ?Sized, O, E, S> {
+        fn debug(self, msg: &'static str) -> DebugParser<'a, P, O, E, S>;
+    }
+
+    impl<'a, P, I, O, E, S> ParserDebug<'a, P, I, O, E, S> for P
+    where
+        P: Parser<'a, I, O, E, S> + Clone,
+        I: Input + ?Sized,
+        E: Error<I>,
+        S: 'a,
+    {
+        fn debug(self, msg: &'static str) -> DebugParser<'a, P, O, E, S> {
+            DebugParser {
+                inner: self,
+                debug_msg: msg,
+                phantom: PhantomData,
             }
-            found => Err(E::expected_found(
-                vec![Some((Token::Var("identifier"), _span))],
-                Some((found, span.clone())),
-                span,
-            )),
-        });
-    let p_var = p_ident.clone().map(Raw::RVar);
-    let p_hole = ctrl("_").map(|_| Raw::RHole);
-    let p_u = any().try_map(|(tok, _span): (Token<'a>, Span), span| match tok {
-        Token::Var(name) if name == "U" => Ok(Raw::RU),
-        found => Err(E::expected_found(
-            [Some((Token::Var("U"), _span.clone()))],
-            Some((found, _span)),
-            span,
-        )),
-    });
-    let p_binder = p_ident.clone().or(ctrl("_").map(|_| "_".into()));
+        }
+    }
 
-    let mut p_raw = Recursive::declare();
+    impl<'a, P, I, O, E, S> Parser<'a, I, O, E, S> for DebugParser<'a, P, O, E, S>
+    where
+        P: Parser<'a, I, O, E, S>,
+        I: Input + ?Sized,
+        E: Error<I>,
+    {
+        fn go<M: Mode>(
+            &self,
+            inp: &mut InputRef<'a, '_, I, E, S>,
+        ) -> chumsky::zero_copy::PResult<M, O, E>
+        where
+            Self: Sized,
+        {
+            let level = DEBUG_LEVEL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-    let p_atom = p_var
-        .or(p_u)
-        .or(p_hole)
-        .or(p_raw.clone().delimited_by(
-            just(Token::Open(Delim::Block)),
-            just(Token::Close(Delim::Block)),
-        ))
-        .or(p_raw.clone().delimited_by(
-            just(Token::Open(Delim::Paren)),
-            just(Token::Close(Delim::Paren)),
-        ));
-    let p_spine = p_atom
-        .clone()
-        .then(p_atom.repeated().collect::<Vec<_>>())
-        .map(|(head, spine)| {
-            spine
-                .into_iter()
-                .fold(head, |acc, arg| Raw::RApp(acc.into(), arg.into()))
-        });
+            use ansi_term::Color::*;
 
-    let p_arrow_r = ctrl("→").or(ctrl("->"));
+            let mut pipes = String::new();
+            let mut colorwheel = [Cyan, White, Green, Purple, Red].into_iter().cycle();
 
-    let fun_or_spine = p_spine
-        .then(p_arrow_r.clone().ignore_then(p_raw.clone()).or_not())
-        .map(|(x, y)| match y {
-            Some(y) => Raw::RPi("_".into(), x.into(), y.into()),
-            None => x,
-        });
+            for i in 0..level {
+                let colored_pipe = format!("{}│ ", colorwheel.next().unwrap().prefix().to_string());
+                pipes.push_str(colored_pipe.as_str());
+            }
 
-    let p_lam = ctrl("λ")
-        .ignore_then(p_binder.clone().repeated().at_least(1).collect::<Vec<_>>())
-        .then_ignore(ctrl("."))
-        .then(p_raw.clone())
-        .map(|(x, t)| {
-            x.into_iter()
-                .rev()
-                .fold(t, |body, arg| Raw::RLam(arg, body.into()))
-        });
-    let p_let = just(Token::Var("let"))
-        .ignore_then(p_binder.clone())
-        .then_ignore(ctrl(":"))
-        .then(p_raw.clone())
-        .then_ignore(ctrl(":="))
-        .then(p_raw.clone())
-        .then_ignore(ctrl("\n"))
-        .then(p_raw.clone())
-        .map(|(((x, e1), e2), e3)| Raw::RLet(x, e1.into(), e2.into(), e3.into()));
-    let p_pi = p_binder
-        .then_ignore(ctrl(":"))
-        .then(p_raw.clone())
-        .delimited_by(
-            just(Token::Open(Delim::Paren)),
-            just(Token::Close(Delim::Paren)),
-        )
-        .then_ignore(p_arrow_r)
-        .then(p_raw.clone())
-        .map(|((x, a), b)| Raw::RPi(x, a.into(), b.into()));
+            let white = White.prefix().to_string();
+            let red = Red.prefix().to_string();
+            let green = Green.prefix().to_string();
+            let current = colorwheel.next().unwrap().prefix().to_string();
 
-    p_raw.define(
-        p_let
-            .or(p_lam)
-            .or(p_pi)
-            .or(fun_or_spine)
-            .map_with_span(|raw, span| Raw::RSrcPos(span, raw.into())),
-    );
+            println!("{pipes}{current}┌─ {white}entered {}", self.debug_msg);
+            let res = self.inner.go::<M>(inp);
 
-    p_raw
+            if res.is_ok() {
+                println!("{pipes}{current}└─ {green}success {}", self.debug_msg);
+            } else {
+                println!("{pipes}{current}└─ {red}failed {}", self.debug_msg);
+            }
+
+            DEBUG_LEVEL.store(level, std::sync::atomic::Ordering::Relaxed);
+
+            res
+        }
+
+        fn go_emit(
+            &self,
+            inp: &mut InputRef<'a, '_, I, E, S>,
+        ) -> chumsky::zero_copy::PResult<Emit, O, E> {
+            Parser::<I, O, E, S>::go::<Emit>(self, inp)
+        }
+
+        fn go_check(
+            &self,
+            inp: &mut InputRef<'a, '_, I, E, S>,
+        ) -> chumsky::zero_copy::PResult<Check, O, E> {
+            Parser::<I, O, E, S>::go::<Check>(self, inp)
+        }
+    }
 }
