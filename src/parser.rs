@@ -236,6 +236,7 @@ mod debug {
     use std::marker::PhantomData;
     use std::sync::atomic::AtomicUsize;
 
+    use ansi_term::Color;
     use chumsky::zero_copy::error::Error;
     use chumsky::zero_copy::input::{Input, InputRef};
     use chumsky::zero_copy::internal::{Check, Emit, Mode};
@@ -286,28 +287,45 @@ mod debug {
         {
             let level = DEBUG_LEVEL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-            use ansi_term::Color::*;
+            use ansi_term::Color::{self, *};
 
             let mut pipes = String::new();
-            let mut colorwheel = [Cyan, White, Green, Purple, Red].into_iter().cycle();
+            // TODO: make this more gay, use pride flags as background color and the inverse? color for the lines
+
+            let mut colorwheel = {
+                let light_blue = Black.on(RGB(91, 206, 250));
+                let pink = Black.on(RGB(245, 169, 184));
+                let white = Black.on(White);
+
+                let red = Black.on(RGB(228, 3, 3));
+                let orange = Black.on(RGB(255, 140, 0));
+                let yellow = Black.on(RGB(255, 237, 0));
+                let green = Black.on(RGB(0, 128, 38));
+                let indigo = Black.on(RGB(36, 64, 142));
+                let violet = Black.on(RGB(115, 41, 130));
+
+                [
+                    light_blue, pink, white, pink, light_blue, red, orange, yellow, green, indigo,
+                    violet,
+                ]
+                .into_iter()
+                .cycle()
+            };
 
             for _ in 0..level {
                 let colored_pipe = format!("{}│ ", colorwheel.next().unwrap().prefix());
                 pipes.push_str(colored_pipe.as_str());
             }
 
-            let white = White.prefix().to_string();
-            let red = Red.prefix().to_string();
-            let green = Green.prefix().to_string();
             let current = colorwheel.next().unwrap().prefix().to_string();
 
-            println!("{pipes}{current}┌─ {white}entered {}", self.debug_msg);
+            println!("{pipes}{current}┌─ entered {}", self.debug_msg);
             let res = self.inner.go::<M>(inp);
 
             if res.is_ok() {
-                println!("{pipes}{current}└─ {green}success {}", self.debug_msg);
+                println!("{pipes}{current}└─ success {}", self.debug_msg);
             } else {
-                println!("{pipes}{current}└─ {red}failed {}", self.debug_msg);
+                println!("{pipes}{current}└─ failed {}", self.debug_msg);
             }
 
             DEBUG_LEVEL.store(level, std::sync::atomic::Ordering::Relaxed);

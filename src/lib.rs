@@ -4,7 +4,6 @@ pub mod lexer;
 pub mod parser;
 pub mod raw;
 
-
 /*
 use ::bitvec::vec::BitVec;
 use error::{Error, ErrorKind};

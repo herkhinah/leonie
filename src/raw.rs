@@ -1,20 +1,35 @@
-use std::ops::Deref;
+use std::{alloc::Allocator, ops::Deref};
 
-use crate::{Name, SourcePos};
+pub type SourcePos = std::ops::Range<usize>;
 
-#[derive(Debug, Clone)]
-pub enum Raw {
-    RVar(Name),
-    RLam(Name, Box<Raw>),
-    RApp(Box<Raw>, Box<Raw>),
+#[derive(Debug, Clone, Copy)]
+pub enum Raw<'arena> {
+    RIdentifier(&'arena str),
+    RTypedArgList {
+        names: &'arena [Self],
+        ty: &'arena Self,
+    },
+    RLambda {
+        args: &'arena [Self],
+        expr: &'arena Self,
+    },
+    RApplication(&'arena Self, &'arena [Self]),
     RU,
-    RPi(Name, Box<Raw>, Box<Raw>),
-    RLet(Name, Box<Raw>, Box<Raw>, Box<Raw>),
-    RSrcPos(SourcePos, Box<Raw>),
+    RPi {
+        args: &'arena [Self],
+        target: &'arena Self,
+    },
+    RLet {
+        name: &'arena Self,
+        ty: Option<&'arena Self>,
+        definition: &'arena Self,
+        scope: &'arena Self,
+    },
+    RSrcPos((usize, usize), &'arena Self),
     RHole,
 }
-
-impl std::fmt::Display for Raw {
+/*
+impl<'a, 'arena, A: Allocator> std::fmt::Display for Raw<'a, 'arena, A> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         const ATOM_P: u8 = 3;
         const APP_P: u8 = 2;
@@ -41,11 +56,11 @@ impl std::fmt::Display for Raw {
             Ok(())
         }
 
-        fn print(prec: u8, raw: &Raw, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        fn print<'a, 'arena, A: Allocator>(prec: u8, raw: &Raw<'a, 'arena, A>, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             match &raw {
                 Raw::RSrcPos(_, raw) => print(prec, raw, f),
-                Raw::RVar(x) => write!(f, "{x}"),
-                Raw::RLam(x, ref t) => {
+                Raw::RIdentifier(x) => write!(f, "{x}"),
+                Raw::RLambda(x, ref t) => {
                     write!(f, "λ {x}")?;
 
                     let mut t = t;
@@ -127,3 +142,4 @@ impl std::fmt::Display for Raw {
         print(0, self, f)
     }
 }
+*/
