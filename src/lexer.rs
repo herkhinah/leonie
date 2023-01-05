@@ -1,14 +1,8 @@
 use std::{fmt::Debug, ops::Range};
 
-use bumpalo::Bump;
 use chumsky::{
-    zero_copy::{
-        combinator::Or,
-        error::Error,
-        prelude::*,
-        recursive::{Direct, Indirect},
-    },
-    BoxStream, Flat, Span,
+    zero_copy::{error::Error, prelude::*},
+    BoxStream, Flat,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -28,7 +22,6 @@ pub enum Delim {
     Paren(char),
     Block,
 }
-
 
 #[derive(Debug, Clone)]
 pub enum TokenTree<'a> {
@@ -67,14 +60,14 @@ where
         )
         .then(any().filter(|c: &char| *c == '\'').repeated())
         .and_is(ctrl.clone().not())
-        .map_slice(|s| Token::<'a>::Ident(s));
+        .map_slice(Ident);
 
     let path = identifier
         .clone()
         .separated_by(just('.'))
         .at_least(2)
         .collect::<Vec<_>>()
-        .map(|output| Token::<'a>::Path(output));
+        .map(Path);
 
     let single_token = path
         .or(identifier)
@@ -113,7 +106,7 @@ where
             )
         });
 
-    tt.define(single_token.clone().or(token_tree.clone()));
+    tt.define(single_token.or(token_tree));
 
     // Whitespace indentation creates code block token trees
     let (res, err) =
@@ -135,10 +128,10 @@ where
 }
 
 /// Flatten a series of token trees into a single token stream, ready for feeding into the main parser
-fn tts_to_stream<'a>(
+fn tts_to_stream(
     eoi: Range<usize>,
-    token_trees: Vec<(TokenTree<'a>, Range<usize>)>,
-) -> BoxStream<'a, Token<'a>, Range<usize>> {
+    token_trees: Vec<(TokenTree<'_>, Range<usize>)>,
+) -> BoxStream<'_, Token<'_>, Range<usize>> {
     use std::iter::once;
 
     BoxStream::from_nested(eoi, token_trees.into_iter(), |(tt, span)| match tt {

@@ -1,27 +1,17 @@
-use std::marker::PhantomData;
 use std::ops::Range;
-use std::sync::atomic::{AtomicU64, AtomicUsize};
 
 use bumpalo::Bump;
-use chumsky::zero_copy::error::Error;
-use chumsky::zero_copy::input::{Input, InputRef};
-use chumsky::zero_copy::internal::{Check, Emit, Mode};
 use chumsky::zero_copy::{prelude::*, recursive::Direct};
 
 use crate::lexer::*;
-use crate::raw::{
-    self,
-    Raw::{self, *},
-};
+use crate::raw::Raw::{self, *};
 
 use Delim::*;
 use Token::*;
 
 pub type TokenInput<'a> = [Token<'a>];
 
-type RawExprParser<'a, 'arena, 'b> =
-    Recursive<dyn Parser<'a, TokenInput<'a>, Raw<'arena>, ()> + 'b>;
-pub type RawLocalScopeParser<'a, 'arena: 'a, 'b> =
+pub type RawLocalScopeParser<'a, 'arena, 'b> =
     Recursive<dyn Parser<'a, TokenInput<'a>, Raw<'arena>, ()> + 'b>;
 
 pub fn raw_local_scope<'a, 'arena, 'b>(
@@ -136,7 +126,7 @@ where
                         .collect::<Vec<_>>()
                         .or(unnamed_argument.map(|arg| vec![arg])),
                 )
-                .then_ignore(arrow)
+                .then_ignore(arrow.clone())
                 .then(raw_type_expr.clone())
                 .map(|(domain, target)| {
                     let args = bump.alloc_slice_copy(&domain);
@@ -152,15 +142,22 @@ where
             just::<Token<'a>, TokenInput<'a>, (), ()>(Ident("let"))
                 .ignore_then(raw_identifier.clone())
                 .then(just(Ctrl(":")).ignore_then(raw_type_expr.clone()).or_not())
-                .then_ignore(just(Ctrl(":=")))
-                .then(raw_expr.clone())
+                .then(
+                    just(Ctrl(":="))
+                        .ignore_then(raw_expr.clone())
+                        .or(just(Ctrl("\n")).ignore_then(
+                            raw_local_scope
+                                .clone()
+                                .delimited_by(just(Open(Block)), just(Close(Block)))
+                        ))
+                )
         );
 
         parser!(
             raw_let,
             let_binder
                 .then_ignore(just(Ctrl("\n")).repeated().at_least(1))
-                .then(raw_local_scope)
+                .then(raw_local_scope.clone())
                 .map(|(((ident, ty), def), scope)| RLet {
                     name: bump.alloc(ident),
                     ty: ty.map(|ty| &*bump.alloc(ty)),
@@ -175,7 +172,6 @@ where
                 raw_let
                     .or(raw_expr.clone())
                     .then_ignore(just(Ctrl("\n")).repeated())
-                    .then_ignore(end())
             )
         );
 
@@ -183,7 +179,7 @@ where
             raw_type_expr,
             raw_pi
                 .or(raw_application.clone())
-                .or(type_atom)
+                .or(type_atom.clone())
                 .or(raw_type_expr
                     .clone()
                     .delimited_by(just(Open(Paren('('))), just(Close(Paren('(')))))
@@ -191,61 +187,70 @@ where
 
         recursive_parser!(
             raw_application,
-            atom.clone()
+            type_atom
+                .clone()
                 .then(atom.repeated().at_least(1).collect::<Vec<_>>())
                 .map(|(rator, rand)| RApplication(bump.alloc(rator), bump.alloc_slice_copy(&rand)))
         );
 
         recursive_parser!(
             raw_expr,
-            raw_lambda.clone().or(raw_type_expr.clone()).or(raw_expr
+            raw_lambda.or(raw_type_expr.clone()).or(raw_expr
                 .clone()
                 .delimited_by(just(Open(Paren('('))), just(Close(Paren('(')))))
         );
 
-        raw_local_scope
+        raw_local_scope.then_ignore(end())
     })
 }
 
-macro_rules! parser {
-    ($name:ident, $def:expr) => {
-        #[cfg(feature = "parser_debug")]
-        use $crate::debug::ParserDebug;
+mod parser_macros {
+    macro_rules! parser {
+        ($name:ident, $def:expr) => {
+            #[cfg(feature = "parser_debug")]
+            let $name = $crate::parser::debug::ParserDebug::debug($def, stringify!($name));
+            #[cfg(not(feature = "parser_debug"))]
+            let $name = $def;
+        };
+    }
 
-        #[cfg(feature = "parser_debug")]
-        let $name = $def.debug(stringify!($name));
-        #[cfg(not(feature = "parser_debug"))]
-        let $name = $def;
-    };
+    macro_rules! recursive_parser {
+        ($name:ident, $def:expr) => {
+            #[cfg(feature = "parser_debug")]
+            $name.define($crate::parser::debug::ParserDebug::debug(
+                $def,
+                stringify!($name),
+            ));
+            #[cfg(not(feature = "parser_debug"))]
+            $name.define($def);
+        };
+    }
+    pub(super) use parser;
+    pub(super) use recursive_parser;
 }
 
-macro_rules! recursive_parser {
-    ($name:ident, $def:expr) => {
-        #[cfg(feature = "parser_debug")]
-        use $crate::debug::ParserDebug;
-        #[cfg(feature = "parser_debug")]
-        $name.define($def.debug(stringify!($name)));
-        #[cfg(not(feature = "parser_debug"))]
-        $name.define($def);
-    };
-}
-
-pub(crate) use parser;
-pub(crate) use recursive_parser;
+use parser_macros::{parser, recursive_parser};
 
 #[cfg(feature = "parser_debug")]
 mod debug {
+    use std::marker::PhantomData;
+    use std::sync::atomic::AtomicUsize;
+
+    use chumsky::zero_copy::error::Error;
+    use chumsky::zero_copy::input::{Input, InputRef};
+    use chumsky::zero_copy::internal::{Check, Emit, Mode};
+    use chumsky::zero_copy::prelude::*;
 
     static DEBUG_LEVEL: AtomicUsize = AtomicUsize::new(0usize);
 
     #[derive(Clone)]
-    struct DebugParser<'a, P, O, E, S> {
+    pub struct DebugParser<'a, P, O, E, S> {
         inner: P,
         debug_msg: &'static str,
         phantom: PhantomData<&'a (O, E, S)>,
     }
 
-    trait ParserDebug<'a, P, I: ?Sized, O, E, S> {
+    pub trait ParserDebug<'a, P, I: ?Sized, O, E, S> {
         fn debug(self, msg: &'static str) -> DebugParser<'a, P, O, E, S>;
     }
 
@@ -270,6 +275,7 @@ mod debug {
         P: Parser<'a, I, O, E, S>,
         I: Input + ?Sized,
         E: Error<I>,
+        S: 'a,
     {
         fn go<M: Mode>(
             &self,
@@ -285,8 +291,8 @@ mod debug {
             let mut pipes = String::new();
             let mut colorwheel = [Cyan, White, Green, Purple, Red].into_iter().cycle();
 
-            for i in 0..level {
-                let colored_pipe = format!("{}│ ", colorwheel.next().unwrap().prefix().to_string());
+            for _ in 0..level {
+                let colored_pipe = format!("{}│ ", colorwheel.next().unwrap().prefix());
                 pipes.push_str(colored_pipe.as_str());
             }
 
