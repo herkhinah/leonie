@@ -1,5 +1,3 @@
-
-
 use bumpalo::Bump;
 use chumsky::zero_copy::{prelude::*, recursive::Direct};
 
@@ -113,17 +111,26 @@ where
                         .at_least(1)
                         .collect::<Vec<_>>()
                 )
-                .then_ignore(arrow)
-                .then(raw_type_expr.clone())
-                .map_with_span(|(domain, target), span| {
+                .then(arrow.ignore_then(raw_type_expr.clone()).or_not())
+                .try_map(|(mut domain, target), span| {
+                    let target = match target {
+                        Some(target) => target,
+                        None => {
+                            if domain.len() > 1 {
+                                domain.pop().unwrap()
+                            } else {
+                                return Err(());
+                            }
+                        }
+                    };
                     let args = bump.alloc_slice_copy(&domain);
-                    RSrcPos(
+                    Ok(RSrcPos(
                         span,
                         bump.alloc(RPi {
                             args,
                             target: bump.alloc(target),
                         }),
-                    )
+                    ))
                 })
         );
 
@@ -199,7 +206,17 @@ where
                 .delimited_by(just(Open(Paren('('))), just(Close(Paren('(')))))
         );
 
-        raw_local_scope.then_ignore(end())
+        #[cfg(feature = "parser_debug")]
+        return debug::debug(
+            raw_local_scope
+                .then_ignore(just(Ctrl("\n")).repeated())
+                .then_ignore(end()),
+            "program",
+        );
+        #[cfg(not(feature = "parser_debug"))]
+        return raw_local_scope
+            .then_ignore(just(Ctrl("\n")).repeated())
+            .then_ignore(end());
     })
 }
 
@@ -207,7 +224,7 @@ mod parser_macros {
     macro_rules! parser {
         ($name:ident, $def:expr) => {
             #[cfg(feature = "parser_debug")]
-            let $name = $crate::parser::debug::ParserDebug::debug($def, stringify!($name));
+            let $name = $crate::parser::debug::debug($def, stringify!($name));
             #[cfg(not(feature = "parser_debug"))]
             let $name = $def;
         };
@@ -216,10 +233,7 @@ mod parser_macros {
     macro_rules! recursive_parser {
         ($name:ident, $def:expr) => {
             #[cfg(feature = "parser_debug")]
-            $name.define($crate::parser::debug::ParserDebug::debug(
-                $def,
-                stringify!($name),
-            ));
+            $name.define($crate::parser::debug::debug($def, stringify!($name)));
             #[cfg(not(feature = "parser_debug"))]
             $name.define($def);
         };
@@ -242,36 +256,28 @@ mod debug {
 
     static DEBUG_LEVEL: AtomicUsize = AtomicUsize::new(0usize);
 
-    #[derive(Clone)]
-    pub struct DebugParser<'src, P, O, E, S> {
+    #[derive(Clone, Copy)]
+    pub struct Debug<'src, P, O, E, S> {
         inner: P,
         debug_msg: &'static str,
         phantom: PhantomData<&'src (O, E, S)>,
     }
 
-    impl<'src, P: Copy, O: Clone, E: Clone, S: Clone> Copy for DebugParser<'src, P, O, E, S> {}
-
-    pub trait ParserDebug<'src, P, I: ?Sized, O, E, S> {
-        fn debug(self, msg: &'static str) -> DebugParser<'src, P, O, E, S>;
-    }
-
-    impl<'src, P, I, O, E, S> ParserDebug<'src, P, I, O, E, S> for P
+    pub fn debug<'src, P, I, O, E, S>(parser: P, msg: &'static str) -> Debug<'src, P, O, E, S>
     where
         P: Parser<'src, I, O, E, S> + Clone,
         I: Input + ?Sized,
         E: Error<I>,
         S: 'src,
     {
-        fn debug(self, msg: &'static str) -> DebugParser<'src, P, O, E, S> {
-            DebugParser {
-                inner: self,
-                debug_msg: msg,
-                phantom: PhantomData,
-            }
+        Debug {
+            inner: parser,
+            debug_msg: msg,
+            phantom: PhantomData,
         }
     }
 
-    impl<'src, P, I, O, E, S> Parser<'src, I, O, E, S> for DebugParser<'src, P, O, E, S>
+    impl<'src, P, I, O, E, S> Parser<'src, I, O, E, S> for Debug<'src, P, O, E, S>
     where
         P: Parser<'src, I, O, E, S>,
         I: Input + ?Sized,

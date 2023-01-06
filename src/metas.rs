@@ -502,7 +502,7 @@ impl Prune {
     }
 }
 
-pub fn lams<'src>(lvl: Lvl, mut t: Term<'src>) -> Term<'src> {
+pub fn lams(lvl: Lvl, mut t: Term<'_>) -> Term<'_> {
     for i in 0..*lvl {
         let depth = t.depth().inc();
         t = Term::Tλ(depth, Name::Generated(i), t.into());
