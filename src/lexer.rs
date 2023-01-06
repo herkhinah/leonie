@@ -1,20 +1,22 @@
 use std::{fmt::Debug, ops::Range};
 
 use chumsky::{
-    zero_copy::{error::Error, prelude::*},
+    zero_copy::{error::Error, input::Input, prelude::*},
     BoxStream, Flat,
+    
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum Token<'a> {
     Open(Delim),
     Close(Delim),
     Ident(&'a str),
-    Path(Vec<Token<'a>>),
     Ctrl(&'a str),
 }
 
 use Token::*;
+
+use crate::common::Span;
 
 // Represents the different kinds of delimiters we care about
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -26,10 +28,10 @@ pub enum Delim {
 #[derive(Debug, Clone)]
 pub enum TokenTree<'a> {
     Token(Token<'a>),
-    Tree(Delim, Vec<(TokenTree<'a>, Range<usize>)>),
+    Tree(Delim, Vec<(TokenTree<'a>, Span)>),
 }
 
-pub fn lex<'a, 'b, E: Error<str> + Debug + 'a>(input: &'b str) -> (Option<Vec<Token<'a>>>, Vec<E>)
+pub fn lex<'a, 'b, E: Error<str> + Debug + 'a>(input: &'b str) -> (Option<TokenInput<'a>>, Vec<E>)
 where
     'b: 'a,
 {
@@ -62,17 +64,9 @@ where
         .and_is(ctrl.clone().not())
         .map_slice(Ident);
 
-    let path = identifier
-        .clone()
-        .separated_by(just('.'))
-        .at_least(2)
-        .collect::<Vec<_>>()
-        .map(Path);
-
-    let single_token = path
-        .or(identifier)
+    let single_token = identifier
         .or(ctrl)
-        .map_with_span(|token, span| (TokenTree::<'a>::Token(token), span));
+        .map_with_span(|token, span: Range<usize>| (TokenTree::<'a>::Token(token), span.into()));
 
     let token_tree = tt
         .clone()
@@ -102,7 +96,7 @@ where
         .map_with_state(|tts, span, state| {
             (
                 TokenTree::<'a>::Tree(Delim::Paren(state.pop().unwrap()), tts),
-                span,
+                span.into(),
             )
         });
 
@@ -110,18 +104,19 @@ where
 
     // Whitespace indentation creates code block token trees
     let (res, err) =
-        text::semantic_indentation(tt, |tts, span| (TokenTree::Tree(Delim::Block, tts), span))
+        text::semantic_indentation(tt, |tts, span| (TokenTree::Tree(Delim::Block, tts), span.into()))
             .then_ignore(end())
             .parse(input);
 
-    let eoi = 0..input.chars().count();
+    let eoi = (0..input.chars().count()).into();
 
     (
         res.map(|token_trees| {
-            tts_to_stream(eoi, token_trees)
-                .fetch_tokens()
-                .map(|(token, _)| token)
-                .collect::<Vec<_>>()
+            TokenInput(
+                tts_to_stream(eoi, token_trees)
+                    .fetch_tokens()
+                    .collect::<Vec<_>>(),
+            )
         }),
         err,
     )
@@ -129,9 +124,9 @@ where
 
 /// Flatten a series of token trees into a single token stream, ready for feeding into the main parser
 fn tts_to_stream(
-    eoi: Range<usize>,
-    token_trees: Vec<(TokenTree<'_>, Range<usize>)>,
-) -> BoxStream<'_, Token<'_>, Range<usize>> {
+    eoi: Span,
+    token_trees: Vec<(TokenTree<'_>, Span)>,
+) -> BoxStream<'_, Token<'_>, Span> {
     use std::iter::once;
 
     BoxStream::from_nested(eoi, token_trees.into_iter(), |(tt, span)| match tt {
@@ -139,9 +134,42 @@ fn tts_to_stream(
         TokenTree::Token(token) => Flat::Single((token, span)),
         // Nested token trees get flattened into their inner contents, surrounded by `Open` and `Close` tokens
         TokenTree::Tree(delim, tree) => Flat::Many(
-            once((TokenTree::Token(Open(delim)), span.clone()))
+            once((TokenTree::Token(Open(delim)), span))
                 .chain(tree.into_iter())
                 .chain(once((TokenTree::Token(Close(delim)), span))),
         ),
     })
+}
+
+pub struct TokenInput<'a>(Vec<(Token<'a>, Span)>);
+
+impl<'a> Input for TokenInput<'a> {
+    type Offset = usize;
+
+    type Token = Token<'a>;
+
+    type Span = Span;
+
+    fn start(&self) -> Self::Offset {
+        0
+    }
+
+    fn next(&self, offset: Self::Offset) -> (Self::Offset, Option<Self::Token>) {
+        if offset < self.0.len() {
+            (offset + 1, Some(self.0[offset].0))
+        } else {
+            (offset, None)
+        }
+
+    }
+
+    fn span(&self, range: Range<Self::Offset>) -> Self::Span {
+        let range = Into::<Span>::into(0..self.0.len()).intersect(range);
+
+        match (range.first(), range.last()) {
+            (Some(first), Some(last)) => (self.0[first].1.start..self.0[last].1.end).into(),
+            _ => Span::empty()
+        }
+
+    }
 }

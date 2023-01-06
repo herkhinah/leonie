@@ -1,33 +1,35 @@
 #![feature(arc_unwrap_or_clone, allocator_api)]
 
-pub mod lexer;
-pub mod parser;
-pub mod raw;
+use std::rc::Rc;
 
-/*
+use ast::Ast;
 use ::bitvec::vec::BitVec;
+use common::Span;
 use error::{Error, ErrorKind};
 use metas::MetaCxt;
-use raw::Raw;
 use term::Term;
-use value::{Type, Value};
+use value::Value;
+use env::Env;
+
 
 
 
 #[macro_use]
 pub mod error;
 pub mod metas;
+pub mod lexer;
 pub mod parser;
 pub mod raw;
+pub mod ast;
 pub mod term;
 pub mod value;
+pub mod env;
+pub mod common;
 
-pub type Name = Rc<str>;
+pub use ast::Name;
+
 
 pub type SourcePos = std::ops::Range<usize>;
-
-type Tm = Rc<Term>;
-type Ty = Rc<Term>;
 
 /// De Bruijn index
 #[derive(Clone, Copy)]
@@ -73,18 +75,17 @@ impl std::ops::DerefMut for Lvl {
     }
 }
 
-pub type VTy = Rc<Value>;
 
 #[derive(Debug, Clone)]
-pub struct Closure(Env, Rc<Term>);
+pub struct Closure<'src>(Env<'src>, Rc<Term<'src>>);
 
-impl Closure {
-    pub fn from(env: &Env, term: Rc<Term>) -> Self {
+impl<'src> Closure<'src> {
+    pub fn from(env: &Env<'src>, term: Rc<Term<'src>>) -> Self {
         let depth = term.depth().0 + 1;
         Self(env.clone_with_capacity(depth), term)
     }
 
-    pub fn eval(self, v: Rc<Value>, metas: &mut MetaCxt) -> Rc<Value> {
+    pub fn eval(self, v: Rc<Value<'src>>, metas: &mut MetaCxt<'src>) -> Rc<Value<'src>> {
         let Closure(mut env, t) = self;
         env.push(v);
 
@@ -92,158 +93,32 @@ impl Closure {
     }
 }
 
-pub mod env {
-    use crate::{
-        metas::{MetaCxt, MetaEntry},
-        value::Spine,
-        Closure, Ix, Lvl, Term, Value,
-    };
-    use std::{ops::Index, rc::Rc, slice::Iter};
-
-    #[derive(Debug, Clone, Default)]
-    pub struct Env(Vec<Rc<Value>>);
-
-    impl Env {
-        pub fn with_capacity(len: usize) -> Self {
-            Self(Vec::with_capacity(len))
-        }
-
-        pub fn clone_with_capacity(&self, len: usize) -> Self {
-            let mut vec = Vec::with_capacity(self.0.len() + len);
-            self.0.clone_into(&mut vec);
-            Self(vec)
-        }
-
-        pub fn push(&mut self, value: Rc<Value>) {
-            self.0.push(value)
-        }
-
-        pub fn pop(&mut self) -> Option<Rc<Value>> {
-            self.0.pop()
-        }
-
-        pub fn iter(&self) -> Iter<Rc<Value>> {
-            self.0.iter()
-        }
-
-        #[inline(always)]
-        pub fn eval_under_binder<T>(
-            &mut self,
-            value: Rc<Value>,
-            f: impl FnOnce(&mut Self) -> T,
-        ) -> (T, Rc<Value>) {
-            self.push(value);
-            (f(self), self.pop().unwrap())
-        }
-
-        pub fn reserve_and_eval(&mut self, metas: &mut MetaCxt, term: Term) -> Rc<Value> {
-            self.0.reserve(term.depth().0);
-
-            self.eval(metas, term)
-        }
-
-        pub fn eval(&mut self, metas: &mut MetaCxt, term: Term) -> Rc<Value> {
-            match term {
-                Term::TV(ix) => self[ix].clone(),
-                Term::Tλ(_, var, body) => Value::Vλ(var, Closure::from(self, body)).into(),
-                Term::TΠ(_, var, domain, codomain) => {
-                    let domain = self.eval(metas, Rc::unwrap_or_clone(domain));
-
-                    Value::VΠ(var, domain, Closure::from(self, codomain)).into()
-                }
-                Term::TLet(_, _, _, bound_term, scope) => {
-                    let value = self.eval(metas, Rc::unwrap_or_clone(bound_term));
-
-                    self.eval_under_binder(value, |env| env.eval(metas, Rc::unwrap_or_clone(scope)))
-                        .0
-                }
-                Term::TMeta(m) => match metas[m].clone() {
-                    MetaEntry::Solved(v, _) => v.into(),
-                    MetaEntry::Unsolved(_) => Value::new_flex(m).into(),
-                },
-                Term::TApp(_, rator, rand) => {
-                    let rand = self.eval(metas, Rc::unwrap_or_clone(rand));
-                    let rator = self.eval(metas, Rc::unwrap_or_clone(rator));
-
-                    Rc::unwrap_or_clone(rator).app(metas, rand)
-                }
-                Term::TU => Value::VU.into(),
-                Term::TAppPruning(m, bds) => {
-                    let mut args = Spine::default();
-
-                    match &metas[m] {
-                        MetaEntry::Solved(val, _) => {
-                            let mut val = val.clone();
-                            for (idx, t) in self.iter().enumerate() {
-                                if bds[idx] {
-                                    val = Rc::unwrap_or_clone(val.app(metas, t.clone()));
-                                }
-                            }
-                            val.into()
-                        }
-                        MetaEntry::Unsolved(_) => {
-                            for (idx, t) in self.iter().cloned().enumerate() {
-                                if bds[idx] {
-                                    args.push(t.clone());
-                                }
-                            }
-
-                            Value::VFlex(m, args).into()
-                        }
-                    }
-                }
-            }
-        }
-
-        pub fn level(&self) -> Lvl {
-            Lvl(self.0.len())
-        }
-    }
-
-    impl Index<Ix> for Env {
-        type Output = Rc<Value>;
-
-        fn index(&self, index: Ix) -> &Self::Output {
-            &self.0[self.0.len() - 1 - index.0]
-        }
-    }
-
-    impl Index<Lvl> for Env {
-        type Output = Rc<Value>;
-
-        fn index(&self, index: Lvl) -> &Self::Output {
-            &self.0[index.0]
-        }
-    }
-}
-
-use env::Env;
 
 #[derive(Debug, Clone)]
-pub enum Local {
-    Bound(Name, Rc<Term>),
-    Defined(Name, Rc<Term>, Rc<Term>),
+pub enum Local<'src> {
+    Bound(Name<'src>, Rc<Term<'src>>),
+    Defined(Name<'src>, Rc<Term<'src>>, Rc<Term<'src>>),
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct Cxt {
+pub struct Cxt<'src> {
     /// used for evaluation
-    env: Env,
+    env: Env<'src>,
     /// used for unification
     lvl: Lvl,
     /// mask of bound variables
     pruning: BitVec<usize>,
     /// getting types of fresh metas
-    locals: Vec<Local>,
+    locals: Vec<Local<'src>>,
     /// names used for lookup during elaboration
-    names: Vec<(Name, Rc<Type>)>,
+    names: Vec<(Name<'src>, Rc<Value<'src>>)>,
     /// used for error reporting
-    pos: SourcePos,
+    pos: Span,
 
-    pub metas: MetaCxt,
+    pub metas: MetaCxt<'src>,
 }
 
-impl Cxt {
+impl<'src> Cxt<'src> {
     pub fn env(&self) -> &Env {
         &self.env
     }
@@ -256,23 +131,23 @@ impl Cxt {
         &self.locals
     }
 
-    pub fn pos(&self) -> &SourcePos {
+    pub fn pos(&self) -> &Span {
         &self.pos
     }
 
     #[inline(always)]
     pub fn bind<T>(
         &mut self,
-        var_name: Name,
-        v_var_type: Rc<Type>,
+        var_name: Name<'src>,
+        v_var_type: Rc<Value<'src>>,
         scope: impl FnOnce(&mut Self) -> T,
-    ) -> (T, (Name, Rc<Type>)) {
+    ) -> (T, (Name<'src>, Rc<Value<'src>>)) {
         self.env.push(Value::new_rigid(self.lvl).into());
         let var_type = (*v_var_type).clone().quote(&mut self.metas, self.lvl);
 
         self.lvl = self.lvl.inc();
         self.locals
-            .push(Local::Bound(var_name.clone(), var_type.into()));
+            .push(Local::Bound(var_name, var_type.into()));
         self.pruning.push(true);
         self.names.push((var_name, v_var_type));
         let res = scope(self);
@@ -287,17 +162,17 @@ impl Cxt {
     #[inline(always)]
     pub fn define<T>(
         &mut self,
-        binder_name: Name,
-        binder_def: Rc<Term>,
-        v_binder_def: Rc<Value>,
-        binder_type: Rc<Term>,
-        v_binder_type: Rc<Value>,
+        binder_name: Name<'src>,
+        binder_def: Rc<Term<'src>>,
+        v_binder_def: Rc<Value<'src>>,
+        binder_type: Rc<Term<'src>>,
+        v_binder_type: Rc<Value<'src>>,
         scope: impl FnOnce(&mut Self) -> T,
-    ) -> (T, (Name, Rc<Term>, Rc<Type>, Rc<Term>, Rc<Value>)) {
+    ) -> (T, (Name<'src>, Rc<Term<'src>>, Rc<Value<'src>>, Rc<Term<'src>>, Rc<Value<'src>>)) {
         self.env.push(v_binder_def);
         self.lvl = self.lvl.inc();
 
-        self.names.push((binder_name.clone(), v_binder_type));
+        self.names.push((binder_name, v_binder_type));
         self.locals
             .push(Local::Defined(binder_name, binder_type, binder_def));
         self.pruning.push(false);
@@ -324,15 +199,22 @@ impl Cxt {
         )
     }
 
-    pub fn check(&mut self, raw: Raw, mut expected_type: Rc<Type>) -> Result<Term, Error> {
+    pub fn check<'arena>(&mut self, raw: Ast<'src, 'arena>, mut expected_type: Rc<Value<'src>>) -> Result<Term<'src>, Error<'src>>
+    where
+        'src: 'arena
+    {
         match raw {
-            Raw::RSrcPos(pos, raw) => {
+            Ast::ASrcPos(pos, raw) => {
                 self.pos = pos;
                 Ok(self.check(*raw, expected_type)?)
             }
 
-            Raw::RLet(binder_name, binder_type, binder_def, scope) => {
-                let binder_type: Rc<Term> = self.check(*binder_type, Value::VU.into())?.into();
+            Ast::ALet(binder_name, binder_type, binder_def, scope) => {
+                let binder_type: Rc<Term> = match binder_type {
+                    Some(binder_type) => self.check(*binder_type, Value::VU.into())?.into(),
+                    None => self.fresh_meta(Value::VU.into()).into()
+                };
+                
                 let v_binder_type = self.eval((*binder_type).clone());
                 let binder_def: Rc<Term> = self.check(*binder_def, v_binder_type.clone())?.into();
                 let v_binder_def = self.eval((*binder_def).clone());
@@ -360,20 +242,21 @@ impl Cxt {
                     scope.into(),
                 ))
             }
-            Raw::RHole => Ok(self.fresh_meta(expected_type)),
+            Ast::AHole => Ok(self.fresh_meta(expected_type)),
 
             mut raw => {
-                if matches!(&raw, Raw::RLam(_, _)) {
+                if matches!(&raw, Ast::ALambda(_, _, _)) {
                     (raw, expected_type) =
                         match (raw, self.metas.force(Rc::unwrap_or_clone(expected_type))) {
                             (
-                                Raw::RLam(lambda_var, lambda_body),
+                                // TODO lambda var type?
+                                Ast::ALambda(lambda_var, _, lambda_body),
                                 Value::VΠ(_, domain, codomain),
                             ) => {
                                 let codomain = codomain
                                     .eval(Value::new_rigid(self.lvl).into(), &mut self.metas);
                                 let lambda_body = self
-                                    .bind(lambda_var.clone(), domain, |cxt| {
+                                    .bind(lambda_var, domain, |cxt| {
                                         cxt.check(*lambda_body, codomain)
                                     })
                                     .0?;
@@ -394,18 +277,21 @@ impl Cxt {
         }
     }
 
-    pub fn close_val(&mut self, value: Value) -> Closure {
+    pub fn close_val(&mut self, value: Value<'src>) -> Closure<'src> {
         let lvl = self.lvl;
         let quoted_term = value.quote(&mut self.metas, lvl.inc());
         Closure::from(&self.env, quoted_term.into())
     }
 
-    pub fn infer(&mut self, raw: Raw) -> Result<(Term, Rc<Type>), Error> {
+    pub fn infer<'arena>(&mut self, raw: Ast<'src, 'arena>) -> Result<(Term<'src>, Rc<Value<'src>>), Error<'src>> 
+    where
+        'src: 'arena
+    {
         Ok(match raw {
-            Raw::RVar(var) => {
+            Ast::AIdent(var) => {
                 let mut result = Err(());
                 for (ix, (var_, r#type)) in self.names.iter().rev().enumerate() {
-                    if &var == var_ {
+                    if matches!(var_, Name::Parsed(_, var)) {
                         result = Ok((Term::TV(Ix(ix)), r#type.clone()));
                         break;
                     }
@@ -413,7 +299,8 @@ impl Cxt {
 
                 result.map_err(|_| error!(ErrorKind::Unbound))?
             }
-            Raw::RLam(mut var, term) => {
+            // TODO: handle optional type
+            Ast::ALambda(mut var, _, term) => {
                 let mut inferred_domain = {
                     let meta_domain = self.fresh_meta(Value::VU.into());
                     self.eval(meta_domain)
@@ -429,8 +316,8 @@ impl Cxt {
                 let depth = term.depth().inc();
 
                 (
-                    Term::Tλ(depth, var.clone(), term.into()),
-                    Type::VΠ(
+                    Term::Tλ(depth, var, term.into()),
+                    Value::VΠ(
                         var,
                         inferred_domain,
                         self.close_val(Rc::<Value>::unwrap_or_clone(inferred_codomain)),
@@ -438,7 +325,7 @@ impl Cxt {
                     .into(),
                 )
             }
-            Raw::RApp(rator, rand) => {
+            Ast::AApplication(rator, rand) => {
                 let (rator, inferred_rator) = self.infer(*rator)?;
                 let (inferred_rator_domain, inferred_rator_codomain) = match self
                     .metas
@@ -452,7 +339,8 @@ impl Cxt {
                         };
                         let (x, meta_codomain) = {
                             let (meta_codomain, (var_domain, meta_domain_)) =
-                                self.bind("a".into(), meta_domain, |cxt| {
+                                // TODO: maybe use generated name?
+                                self.bind(Name::Elided(None), meta_domain, |cxt| {
                                     cxt.fresh_meta(Value::VU.into())
                                 });
                             meta_domain = meta_domain_;
@@ -483,8 +371,8 @@ impl Cxt {
                     inferred_type,
                 )
             }
-            Raw::RU => (Term::TU, Value::VU.into()),
-            Raw::RPi(mut var_domain, domain, codomain) => {
+            Ast::AU => (Term::TU, Value::VU.into()),
+            Ast::APi(mut var_domain, domain, codomain) => {
                 let checked_domain = self.check(*domain, Value::VU.into())?;
                 let checked_codomain = {
                     let evaluated_domain = self.eval(checked_domain.clone());
@@ -508,8 +396,11 @@ impl Cxt {
                     Value::VU.into(),
                 )
             }
-            Raw::RLet(binder_name, binder_type, binder_def, scope) => {
-                let binder_type: Rc<Term> = self.check(*binder_type, Value::VU.into())?.into();
+            Ast::ALet(binder_name, binder_type, binder_def, scope) => {
+                let binder_type: Rc<Term> = match binder_type {
+                    Some(binder_type) => self.check(*binder_type, Value::VU.into())?.into(),
+                    None => self.fresh_meta(Value::VU.into()).into()
+                };
                 let v_binder_type = self.eval((*binder_type).clone());
 
                 let binder_def: Rc<Term> = self.check(*binder_def, v_binder_type.clone())?.into();
@@ -536,11 +427,11 @@ impl Cxt {
                     inferred_scope,
                 )
             }
-            Raw::RSrcPos(pos, t) => {
+            Ast::ASrcPos(pos, t) => {
                 self.pos = pos;
                 self.infer(*t)?
             }
-            Raw::RHole => {
+            Ast::AHole => {
                 let hole_type = {
                     let m = self.fresh_meta(Value::VU.into());
                     self.eval(m)
@@ -551,27 +442,27 @@ impl Cxt {
         })
     }
 
-    pub fn normal_form(&mut self, term: Term) -> Term {
+    pub fn normal_form(&mut self, term: Term<'src>) -> Term<'src> {
         Rc::unwrap_or_clone(self.eval(term)).quote(&mut self.metas, self.env.level())
     }
 
-    fn eval(&mut self, term: Term) -> Rc<Value> {
+    fn eval(&mut self, term: Term<'src>) -> Rc<Value<'src>> {
         let Self { env, metas, .. } = self;
 
         env.reserve_and_eval(metas, term)
     }
 
-    fn close_type(locals: &[Local], mut ty: Rc<Term>) -> Rc<Term> {
+    fn close_type(locals: &[Local<'src>], mut ty: Rc<Term<'src>>) -> Rc<Term<'src>> {
         for local in locals.iter().rev() {
             match local {
                 Local::Bound(name, ty_) => {
                     let depth = std::cmp::max(ty.depth().inc(), ty_.depth());
-                    ty = Term::TΠ(depth, name.clone(), ty_.clone(), ty).into();
+                    ty = Term::TΠ(depth, *name, ty_.clone(), ty).into();
                 }
                 Local::Defined(x, ty_, def) => {
                     let depth =
                         std::cmp::max(std::cmp::max(ty_.depth(), def.depth()), ty.depth().inc());
-                    ty = Term::TLet(depth, x.clone(), ty_.clone(), def.clone(), ty).into();
+                    ty = Term::TLet(depth, *x, ty_.clone(), def.clone(), ty).into();
                 }
             }
         }
@@ -579,7 +470,7 @@ impl Cxt {
         ty
     }
 
-    fn fresh_meta(&mut self, ty: VTy) -> Term {
+    fn fresh_meta(&mut self, ty: Rc<Value<'src>>) -> Term<'src> {
         let Self {
             pruning,
             metas,
@@ -593,4 +484,4 @@ impl Cxt {
         metas.fresh_meta_term(ty, pruning.clone())
     }
 }
-*/
+

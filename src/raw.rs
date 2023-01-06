@@ -1,10 +1,11 @@
-use std::{alloc::Allocator, ops::Deref};
 
-pub type SourcePos = std::ops::Range<usize>;
+
+use crate::common::Span;
+
 
 #[derive(Debug, Clone, Copy)]
-pub enum Raw<'arena> {
-    RIdentifier(&'arena str),
+pub enum Raw<'src, 'arena> {
+    RIdentifier(&'src str),
     RTypedArgList {
         names: &'arena [Self],
         ty: &'arena Self,
@@ -25,7 +26,7 @@ pub enum Raw<'arena> {
         definition: &'arena Self,
         scope: &'arena Self,
     },
-    RSrcPos((usize, usize), &'arena Self),
+    RSrcPos(Span, &'arena Self),
     RHole,
 }
 /*

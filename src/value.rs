@@ -2,14 +2,14 @@ use std::rc::Rc;
 
 use crate::{
     metas::{MetaCxt, MetaVar},
-    Closure, Lvl, Name, Term, VTy,
+    Closure, Lvl, Name, Term,
 };
 
 #[derive(Debug, Clone, Default)]
-pub struct Spine(Vec<Rc<Value>>);
+pub struct Spine<'src>(Vec<Rc<Value<'src>>>);
 
-impl Spine {
-    pub fn quote(mut self, metas: &mut MetaCxt, lvl: Lvl, tm: Term) -> Term {
+impl<'src> Spine<'src> {
+    pub fn quote(mut self, metas: &mut MetaCxt<'src>, lvl: Lvl, tm: Term<'src>) -> Term<'src> {
         if let Some(u) = self.0.pop() {
             let rator = self.quote(metas, lvl, tm);
             let rand = Rc::unwrap_or_clone(u).quote(metas, lvl);
@@ -21,23 +21,23 @@ impl Spine {
         }
     }
 
-    pub fn push(&mut self, value: Rc<Value>) {
+    pub fn push(&mut self, value: Rc<Value<'src>>) {
         self.0.push(value)
     }
 }
 
-impl std::iter::IntoIterator for Spine {
-    type Item = Rc<Value>;
+impl<'src> std::iter::IntoIterator for Spine<'src> {
+    type Item = Rc<Value<'src>>;
 
-    type IntoIter = std::vec::IntoIter<Rc<Value>>;
+    type IntoIter = std::vec::IntoIter<Rc<Value<'src>>>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.into_iter()
     }
 }
 
-impl std::ops::Deref for Spine {
-    type Target = Vec<Rc<Value>>;
+impl<'src> std::ops::Deref for Spine<'src> {
+    type Target = Vec<Rc<Value<'src>>>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -45,32 +45,31 @@ impl std::ops::Deref for Spine {
 }
 
 #[derive(Debug, Clone)]
-pub enum Value {
+pub enum Value<'src> {
     /// unsolved meta variabel
-    VFlex(MetaVar, Spine),
+    VFlex(MetaVar, Spine<'src>),
     /// bound variable applied to zero or more arguments
-    VRigid(Lvl, Spine),
+    VRigid(Lvl, Spine<'src>),
     // lambda closure
-    Vλ(Name, Closure),
+    Vλ(Name<'src>, Closure<'src>),
     // pi type
-    VΠ(Name, VTy, Closure),
+    VΠ(Name<'src>, Rc<Self>, Closure<'src>),
     // universe
     VU,
 }
 
-pub type Type = Value;
 
 #[derive(Debug, Clone)]
-struct VFlex(MetaVar, Spine);
+struct VFlex<'src>(MetaVar, Spine<'src>);
 
 #[derive(Debug, Clone)]
-struct VRigid(Lvl, Spine);
+struct VRigid<'src>(Lvl, Spine<'src>);
 
 #[derive(Debug, Clone)]
 struct VLambda();
 
-impl Value {
-    pub fn quote(self, metas: &mut MetaCxt, lvl: Lvl) -> Term {
+impl<'src> Value<'src> {
+    pub fn quote(self, metas: &mut MetaCxt<'src>, lvl: Lvl) -> Term<'src> {
         match self {
             Value::VFlex(m, sp) => sp.quote(metas, lvl, Term::TMeta(m)),
             Value::VRigid(x, sp) => sp.quote(metas, lvl, Term::TV(x.as_index(lvl))),
@@ -95,7 +94,7 @@ impl Value {
         }
     }
 
-    pub fn app(self, metas: &mut MetaCxt, value: Rc<Value>) -> Rc<Value> {
+    pub fn app(self, metas: &mut MetaCxt<'src>, value: Rc<Value<'src>>) -> Rc<Value<'src>> {
         match self {
             Value::VFlex(m, mut sp) => {
                 sp.push(value);
@@ -110,11 +109,11 @@ impl Value {
         }
     }
 
-    pub fn new_flex(m: MetaVar) -> Value {
+    pub fn new_flex(m: MetaVar) -> Value<'src> {
         Value::VFlex(m, Spine::default())
     }
 
-    pub fn new_rigid(lvl: Lvl) -> Value {
+    pub fn new_rigid(lvl: Lvl) -> Value<'src> {
         Value::VRigid(lvl, Spine::default())
     }
 }

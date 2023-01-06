@@ -8,7 +8,6 @@ edition = "2021"
 
 [features]
 parser_debug = [ "dep:ansi_term" ]
-default = [ "parser_debug" ]
 
 [dependencies]
 ansi_term = { verison = "0.12.1", optional = true }

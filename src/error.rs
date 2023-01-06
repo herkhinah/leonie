@@ -6,20 +6,20 @@ use crate::{
 };
 
 #[derive(Debug)]
-pub struct Error {
+pub struct Error<'src> {
     pub backtrace: Backtrace,
-    pub kind: ErrorKind,
+    pub kind: ErrorKind<'src>,
 }
 
 #[derive(Debug, Clone)]
-pub enum ErrorKind {
+pub enum ErrorKind<'src> {
     Unbound,
     Unify,
-    MetaOccurs(MetaVar, Value),
-    MetaScope(Value),
-    MetaSpine(Spine, Spine),
+    MetaOccurs(MetaVar, Value<'src>),
+    MetaScope(Value<'src>),
+    MetaSpine(Spine<'src>, Spine<'src>),
     MetaInvert,
-    MetaUnify(Value, Value),
+    MetaUnify(Value<'src>, Value<'src>),
     InferUnbound(),
 }
 

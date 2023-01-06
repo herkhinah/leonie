@@ -1,7 +1,7 @@
 use ::bitvec::vec::BitVec;
-use std::{ops::Deref, rc::Rc};
+use std::{rc::Rc};
 
-use crate::{metas::MetaVar, term::fresh::Fresh, Cxt, Ix, Lvl, Name, Tm, Ty};
+use crate::{metas::MetaVar, term::fresh::Fresh, Cxt, Ix, Lvl, Name};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Depth(pub usize);
@@ -13,18 +13,18 @@ impl Depth {
 }
 
 #[derive(Debug, Clone)]
-pub enum Term {
-    Tλ(Depth, Name, Tm),
-    TΠ(Depth, Name, Ty, Ty),
-    TLet(Depth, Name, Ty, Tm, Tm),
-    TApp(Depth, Tm, Tm),
+pub enum Term<'src> {
+    Tλ(Depth, Name<'src>, Rc<Self>),
+    TΠ(Depth, Name<'src>, Rc<Self>, Rc<Self>),
+    TLet(Depth, Name<'src>, Rc<Self>, Rc<Self>, Rc<Self>),
+    TApp(Depth, Rc<Self>, Rc<Self>),
     TAppPruning(MetaVar, BitVec<usize>),
     TMeta(MetaVar),
     TV(Ix),
     TU,
 }
 
-impl Term {
+impl<'src> Term<'src> {
     pub fn depth(&self) -> Depth {
         match self {
             Term::Tλ(depth, _, _)
@@ -37,9 +37,9 @@ impl Term {
     }
 }
 
-pub struct TPrettyPrinter<'a>(pub &'a Cxt, pub &'a Term);
+pub struct TPrettyPrinter<'a, 'src>(pub &'a Cxt<'src>, pub &'a Term<'src>);
 
-impl<'a> std::fmt::Display for TPrettyPrinter<'a> {
+impl<'a, 'src> std::fmt::Display for TPrettyPrinter<'a, 'src> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let TPrettyPrinter(cxt, t) = self;
 
@@ -66,10 +66,10 @@ impl<'a> std::fmt::Display for TPrettyPrinter<'a> {
             p_curr < p_old
         }
 
-        fn print_lambda_body(
-            term: &Term,
+        fn print_lambda_body<'src>(
+            term: &Term<'src>,
             f: &mut std::fmt::Formatter<'_>,
-            fresh: &mut Fresh,
+            fresh: &mut Fresh<'src>,
         ) -> std::fmt::Result {
             match term {
                 Term::Tλ(_, x, term) => fresh.with_unfresh(x, |fresh, x| {
@@ -83,11 +83,11 @@ impl<'a> std::fmt::Display for TPrettyPrinter<'a> {
             }
         }
 
-        fn print(
+        fn print<'src>(
             prec: i8,
-            term: &Term,
+            term: &Term<'src>,
             f: &mut std::fmt::Formatter<'_>,
-            fresh: &mut Fresh,
+            fresh: &mut Fresh<'src>,
         ) -> std::fmt::Result {
             match &term {
                 Term::TV(x) => {
@@ -107,7 +107,7 @@ impl<'a> std::fmt::Display for TPrettyPrinter<'a> {
                     || show_parens(prec, PI_P),
                     f,
                     |f| {
-                        if x.deref() == "_" {
+                        if matches!(x, Name::Elided(_)) {
                             print(APP_P, a, f, fresh)?;
                             write!(f, " → ")?;
                         } else {
@@ -177,35 +177,36 @@ impl<'a> std::fmt::Display for TPrettyPrinter<'a> {
             }
         }
 
-        let names: Vec<Rc<str>> = cxt.names.iter().map(|(name, _)| name.clone()).collect();
+        let names: Vec<Name<'src>> = cxt.names.iter().map(|(name, _)| *name).collect();
 
         print(0, t, f, &mut Fresh::new(names))
     }
 }
 
 mod fresh {
-    use std::ops::{Deref, Index};
+    use std::ops::Index;
 
     use crate::{Ix, Lvl, Name};
 
     #[derive(Default)]
-    pub struct Fresh(Vec<Name>);
+    pub struct Fresh<'src>(Vec<Name<'src>>, usize);
 
-    impl Fresh {
-        pub fn new(names: Vec<Name>) -> Self {
-            Self(names)
+    impl<'src> Fresh<'src> {
+        pub fn new(names: Vec<Name<'src>>) -> Self {
+            Self(names, 0)
         }
 
-        pub fn freshen(&self, name: &Name) -> Name {
+        pub fn freshen(&mut self, name: &Name<'src>) -> Name<'src> {
             if !self.0.contains(name) {
-                name.clone()
+                *name
             } else {
-                self.freshen(&format!("{}'", name.deref()).into_boxed_str().into())
+                self.1 += 1;
+                Name::Generated(self.1 - 1)
             }
         }
 
-        pub fn with_fresh<T>(&mut self, name: &Name, f: impl FnOnce(&mut Self, &Name) -> T) -> T {
-            self.0.push(name.clone());
+        pub fn with_fresh<T>(&mut self, name: &Name<'src>, f: impl FnOnce(&mut Self, &Name<'src>) -> T) -> T {
+            self.0.push(*name);
 
             let res = f(self, name);
 
@@ -214,10 +215,10 @@ mod fresh {
             res
         }
 
-        pub fn with_unfresh<T>(&mut self, name: &Name, f: impl FnOnce(&mut Self, &Name) -> T) -> T {
+        pub fn with_unfresh<T>(&mut self, name: &Name<'src>, f: impl FnOnce(&mut Self, &Name<'src>) -> T) -> T {
             let fresh = self.freshen(name);
 
-            self.0.push(fresh.clone());
+            self.0.push(fresh);
 
             let res = f(self, &fresh);
 
@@ -227,16 +228,16 @@ mod fresh {
         }
     }
 
-    impl Index<Ix> for Fresh {
-        type Output = Name;
+    impl<'src> Index<Ix> for Fresh<'src> {
+        type Output = Name<'src>;
 
         fn index(&self, index: Ix) -> &Self::Output {
             &self.0[self.0.len() - 1 - index.0]
         }
     }
 
-    impl Index<Lvl> for Fresh {
-        type Output = Name;
+    impl<'src> Index<Lvl> for Fresh<'src> {
+        type Output = Name<'src>;
 
         fn index(&self, index: Lvl) -> &Self::Output {
             &self.0[index.0]

@@ -4,48 +4,48 @@ use std::rc::Rc;
 use crate::{
     error::{Error, ErrorKind},
     value::{Spine, Value},
-    Env, Lvl, Term, VTy,
+    Env, Lvl, Term, Name,
 };
 
 #[derive(Debug, Clone)]
-pub enum MetaEntry {
-    Solved(Value, VTy),
-    Unsolved(VTy),
+pub enum MetaEntry<'src> {
+    Solved(Value<'src>, Rc<Value<'src>>),
+    Unsolved(Rc<Value<'src>>),
 }
 
 pub type MetaVar = usize;
 
 #[derive(Debug, Clone, Default)]
-pub struct MetaCxt(Vec<MetaEntry>);
+pub struct MetaCxt<'src>(Vec<MetaEntry<'src>>);
 
-impl std::ops::Index<MetaVar> for MetaCxt {
-    type Output = MetaEntry;
+impl<'src> std::ops::Index<MetaVar> for MetaCxt<'src> {
+    type Output = MetaEntry<'src>;
 
     fn index(&self, index: MetaVar) -> &Self::Output {
         &self.0[index]
     }
 }
 
-impl std::ops::IndexMut<MetaVar> for MetaCxt {
+impl<'src> std::ops::IndexMut<MetaVar> for MetaCxt<'src> {
     fn index_mut(&mut self, index: MetaVar) -> &mut Self::Output {
         &mut self.0[index]
     }
 }
 
-impl MetaCxt {
-    pub fn fresh_meta(&mut self, ty: VTy) -> MetaVar {
+impl<'src> MetaCxt<'src> {
+    pub fn fresh_meta(&mut self, ty: Rc<Value<'src>>) -> MetaVar {
         let m = self.0.len();
         self.0.push(MetaEntry::Unsolved(ty));
         m
     }
 
-    pub fn fresh_meta_term(&mut self, ty: VTy, bds: BitVec<usize>) -> Term {
+    pub fn fresh_meta_term(&mut self, ty: Rc<Value<'src>>, bds: BitVec<usize>) -> Term<'src> {
         let m = self.0.len();
         self.0.push(MetaEntry::Unsolved(ty));
         Term::TAppPruning(m, bds)
     }
 
-    pub fn forced_is_var(&self, value: &Value) -> Option<Lvl> {
+    pub fn forced_is_var(&self, value: &Value<'src>) -> Option<Lvl> {
         match value {
             Value::VFlex(m, sp) if sp.is_empty() => match &self[*m] {
                 MetaEntry::Solved(v, _) => self.forced_is_var(v),
@@ -56,7 +56,7 @@ impl MetaCxt {
         }
     }
 
-    pub fn force(&mut self, value: Value) -> Value {
+    pub fn force(&mut self, value: Value<'src>) -> Value<'src> {
         match value {
             Value::VFlex(m, sp) => match &self[m] {
                 MetaEntry::Solved(v, _) => {
@@ -74,7 +74,7 @@ impl MetaCxt {
         }
     }
 
-    pub fn unify_sp(&mut self, lvl: Lvl, sp: Spine, sp_: Spine) -> Result<(), Error> {
+    pub fn unify_sp(&mut self, lvl: Lvl, sp: Spine<'src>, sp_: Spine<'src>) -> Result<(), Error<'src>> {
         if sp.len() != sp_.len() {
             return Err(error!(ErrorKind::MetaSpine(sp, sp_)));
         }
@@ -86,7 +86,7 @@ impl MetaCxt {
         Ok(())
     }
 
-    pub fn intersect(&mut self, lvl: Lvl, m: MetaVar, sp: Spine, sp_: Spine) -> Result<(), Error> {
+    pub fn intersect(&mut self, lvl: Lvl, m: MetaVar, sp: Spine<'src>, sp_: Spine<'src>) -> Result<(), Error<'src>> {
         if sp.len() != sp_.len() {
             return Err(error!(ErrorKind::Unify));
         }
@@ -122,7 +122,7 @@ impl MetaCxt {
         }
     }
 
-    pub fn unify(&mut self, lvl: Lvl, l: Rc<Value>, r: Rc<Value>) -> Result<(), Error> {
+    pub fn unify(&mut self, lvl: Lvl, l: Rc<Value<'src>>, r: Rc<Value<'src>>) -> Result<(), Error<'src>> {
         let l = self.force(Rc::unwrap_or_clone(l));
         let r = self.force(Rc::unwrap_or_clone(r));
 
@@ -166,7 +166,7 @@ impl MetaCxt {
         }
     }
 
-    pub fn solve(&mut self, lvl: Lvl, m: MetaVar, sp: Spine, rhs: Rc<Value>) -> Result<(), Error> {
+    pub fn solve(&mut self, lvl: Lvl, m: MetaVar, sp: Spine<'src>, rhs: Rc<Value<'src>>) -> Result<(), Error<'src>> {
         let p_ren = PartialRenaming::invert(self, lvl, &sp)?;
         self.solve_with_pren(m, p_ren, Rc::unwrap_or_clone(rhs))
     }
@@ -175,8 +175,8 @@ impl MetaCxt {
         &mut self,
         m: MetaVar,
         (mut pren, prune_non_linear): (PartialRenaming, Option<Prune>),
-        rhs: Value,
-    ) -> Result<(), Error> {
+        rhs: Value<'src>,
+    ) -> Result<(), Error<'src>> {
         let m_ty = match &self[m] {
             MetaEntry::Solved(_, _) => panic!(),
             MetaEntry::Unsolved(a) => a.clone(),
@@ -197,9 +197,9 @@ impl MetaCxt {
     pub fn flex_flex(
         &mut self,
         gamma: Lvl,
-        mut left: (MetaVar, Spine),
-        mut right: (MetaVar, Spine),
-    ) -> Result<(), Error> {
+        mut left: (MetaVar, Spine<'src>),
+        mut right: (MetaVar, Spine<'src>),
+    ) -> Result<(), Error<'src>> {
         if left.1.len() < right.1.len() {
             std::mem::swap(&mut left, &mut right);
         }
@@ -276,11 +276,11 @@ impl PartialRenaming {
         res
     }
 
-    pub fn invert(
-        metas: &mut MetaCxt,
+    pub fn invert<'src>(
+        metas: &mut MetaCxt<'src>,
         gamma: Lvl,
-        spine: &Spine,
-    ) -> Result<(Self, Option<Prune>), Error> {
+        spine: &Spine<'src>,
+    ) -> Result<(Self, Option<Prune>), Error<'src>> {
         let mut ren = vec![None; gamma.0 + 1];
         ren.pop();
         let dom = spine.len();
@@ -320,7 +320,7 @@ impl PartialRenaming {
         ))
     }
 
-    pub fn rename(&mut self, metas: &mut MetaCxt, v: Rc<Value>) -> Result<Term, Error> {
+    pub fn rename<'src>(&mut self, metas: &mut MetaCxt<'src>, v: Rc<Value<'src>>) -> Result<Term<'src>, Error<'src>> {
         match metas.force(Rc::unwrap_or_clone(v)) {
             Value::VFlex(m_, sp) => {
                 if let Some(m) = self.occ {
@@ -359,7 +359,7 @@ impl PartialRenaming {
     }
 
     #[inline(always)]
-    fn rename_spine(&mut self, metas: &mut MetaCxt, mut t: Term, sp: Spine) -> Result<Term, Error> {
+    fn rename_spine<'src>(&mut self, metas: &mut MetaCxt<'src>, mut t: Term<'src>, sp: Spine<'src>) -> Result<Term<'src>, Error<'src>> {
         if sp.is_empty() {
             return Ok(t);
         }
@@ -376,7 +376,7 @@ impl PartialRenaming {
         Ok(t)
     }
 
-    fn prune_vflex(&mut self, metas: &mut MetaCxt, m: MetaVar, sp: Spine) -> Result<Term, Error> {
+    fn prune_vflex<'src>(&mut self, metas: &mut MetaCxt<'src>, m: MetaVar, sp: Spine<'src>) -> Result<Term<'src>, Error<'src>> {
         enum PruneStatus {
             OKRenaming,
             OKNonRenaming,
@@ -439,7 +439,7 @@ impl PartialRenaming {
 pub struct Prune(BitVec<usize>);
 
 impl Prune {
-    pub fn prune_meta(self, metas: &mut MetaCxt, m: MetaVar) -> Result<MetaVar, Error> {
+    pub fn prune_meta<'src>(self, metas: &mut MetaCxt<'src>, m: MetaVar) -> Result<MetaVar, Error<'src>> {
         let mty = match &metas[m] {
             MetaEntry::Solved(_, _) => panic!(),
             MetaEntry::Unsolved(a) => a.clone(),
@@ -460,15 +460,15 @@ impl Prune {
         Ok(m_)
     }
 
-    pub fn prune_type(mut self, metas: &mut MetaCxt, ty: VTy) -> Result<Term, Error> {
+    pub fn prune_type<'src>(mut self, metas: &mut MetaCxt<'src>, ty: Rc<Value<'src>>) -> Result<Term<'src>, Error<'src>> {
         let mut pren = PartialRenaming::empty();
 
-        fn prune(
+        fn prune<'src>(
             pr: &mut BitVec<usize>,
-            metas: &mut MetaCxt,
+            metas: &mut MetaCxt<'src>,
             pren: &mut PartialRenaming,
-            mut ty: Rc<Value>,
-        ) -> Result<Term, Error> {
+            mut ty: Rc<Value<'src>>,
+        ) -> Result<Term<'src>, Error<'src>> {
             let mut vec = Vec::with_capacity(pr.len());
 
             for prune in pr.iter().by_vals() {
@@ -502,10 +502,10 @@ impl Prune {
     }
 }
 
-pub fn lams(lvl: Lvl, mut t: Term) -> Term {
+pub fn lams<'src>(lvl: Lvl, mut t: Term<'src>) -> Term<'src> {
     for i in 0..*lvl {
         let depth = t.depth().inc();
-        t = Term::Tλ(depth, format!("x{}", i + 1).into(), t.into());
+        t = Term::Tλ(depth, Name::Generated(i), t.into());
     }
     t
 }

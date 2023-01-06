@@ -1,25 +1,24 @@
-use std::ops::Range;
+
 
 use bumpalo::Bump;
 use chumsky::zero_copy::{prelude::*, recursive::Direct};
 
+use crate::common::Span;
 use crate::lexer::*;
 use crate::raw::Raw::{self, *};
 
 use Delim::*;
 use Token::*;
 
-pub type TokenInput<'a> = [Token<'a>];
+pub type RawLocalScopeParser<'src, 'arena, 'parser> =
+    Recursive<dyn Parser<'src, TokenInput<'src>, Raw<'src, 'arena>, ()> + 'parser>;
 
-pub type RawLocalScopeParser<'a, 'arena, 'b> =
-    Recursive<dyn Parser<'a, TokenInput<'a>, Raw<'arena>, ()> + 'b>;
-
-pub fn raw_local_scope<'a, 'arena, 'b>(
+pub fn raw_local_scope<'src, 'arena, 'parser>(
     bump: &'arena Bump,
-) -> Recursive<Direct<'b, TokenInput<'a>, Raw<'arena>, ()>>
+) -> Recursive<Direct<'parser, TokenInput<'src>, Raw<'src, 'arena>, ()>>
 where
-    'arena: 'b,
-    'a: 'b + 'arena,
+    'arena: 'parser,
+    'src: 'parser + 'arena,
 {
     recursive(|raw_local_scope| {
         let mut raw_application = Recursive::declare();
@@ -30,38 +29,29 @@ where
 
         parser!(
             raw_identifier,
-            any().try_map(move |token, span: Range<usize>| match token {
-                Ident(ident) => Ok(RSrcPos(
-                    (span.start, span.end),
-                    bump.alloc(RIdentifier(ident)),
-                )),
+            any().try_map(move |token, span: Span| match token {
+                Ident(ident) => Ok(RSrcPos(span, bump.alloc(RIdentifier(ident)),)),
                 found => Err(()),
             })
         );
-        parser!(
-            raw_universe,
-            just::<Token<'a>, TokenInput<'a>, (), ()>(Ident("U")).map(|_| RU)
-        );
+        parser!(raw_universe, just(Ident("U")).map(|_| RU));
 
         parser!(
             raw_named_argument,
-            just::<Token<'a>, TokenInput<'a>, (), ()>(Open(Delim::Paren('(')))
-                .ignore_then(
-                    raw_identifier
-                        .clone()
-                        .repeated()
-                        .at_least(1)
-                        .collect::<Vec<_>>(),
-                )
+            just(Open(Delim::Paren('(')))
+                .ignore_then(raw_identifier.repeated().at_least(1).collect::<Vec<_>>(),)
                 .then_ignore(just(Ctrl(":")))
                 .then(raw_type_expr.clone())
                 .then_ignore(just(Close(Delim::Paren('('))))
-                .map(|(args, ty)| {
+                .map_with_span(|(args, ty), span: Span| {
                     let args = bump.alloc_slice_copy(&args);
-                    RTypedArgList {
-                        names: args,
-                        ty: bump.alloc(ty),
-                    }
+                    RSrcPos(
+                        span,
+                        bump.alloc(RTypedArgList {
+                            names: args,
+                            ty: bump.alloc(ty),
+                        }),
+                    )
                 })
         );
 
@@ -69,20 +59,15 @@ where
 
         parser!(
             atom,
-            raw_identifier
+            raw_identifier.or(raw_hole).or(raw_universe).or(raw_expr
                 .clone()
-                .or(raw_hole.clone())
-                .or(raw_universe.clone())
-                .or(raw_expr
-                    .clone()
-                    .delimited_by(just(Open(Paren('('))), just(Close(Paren('(')))))
+                .delimited_by(just(Open(Paren('('))), just(Close(Paren('(')))))
         );
 
         parser!(
             type_atom,
             raw_identifier
-                .clone()
-                .or(raw_hole.clone())
+                .or(raw_hole)
                 .or(raw_universe)
                 .or(raw_type_expr
                     .clone()
@@ -93,11 +78,10 @@ where
 
         parser!(
             raw_lambda,
-            just::<Token<'a>, TokenInput<'a>, (), ()>(Ctrl("λ"))
+            just(Ctrl("λ"))
                 .or(just(Ctrl("\\")))
                 .ignore_then(
                     raw_identifier
-                        .clone()
                         .or(raw_named_argument.clone())
                         .repeated()
                         .at_least(1)
@@ -105,42 +89,48 @@ where
                 )
                 .then_ignore(just(Ctrl(".")))
                 .then(raw_expr.clone())
-                .map(|(identifier, expr)| {
+                .map_with_span(|(identifier, expr), span| {
                     let args = bump.alloc_slice_copy(&identifier);
-                    RLambda {
-                        args,
-                        expr: bump.alloc(expr),
-                    }
+                    RSrcPos(
+                        span,
+                        bump.alloc(RLambda {
+                            args,
+                            expr: bump.alloc(expr),
+                        }),
+                    )
                 })
         );
 
         parser!(
             raw_pi,
-            just::<Token<'a>, TokenInput<'a>, (), ()>(Ctrl("Π"))
+            just(Ctrl("Π"))
                 .or_not()
                 .ignore_then(
                     raw_named_argument
                         .clone()
-                        .separated_by(arrow.clone().or_not())
+                        .or(unnamed_argument)
+                        .separated_by(arrow.or_not())
                         .at_least(1)
                         .collect::<Vec<_>>()
-                        .or(unnamed_argument.map(|arg| vec![arg])),
                 )
-                .then_ignore(arrow.clone())
+                .then_ignore(arrow)
                 .then(raw_type_expr.clone())
-                .map(|(domain, target)| {
+                .map_with_span(|(domain, target), span| {
                     let args = bump.alloc_slice_copy(&domain);
-                    RPi {
-                        args,
-                        target: bump.alloc(target),
-                    }
+                    RSrcPos(
+                        span,
+                        bump.alloc(RPi {
+                            args,
+                            target: bump.alloc(target),
+                        }),
+                    )
                 })
         );
 
         parser!(
             let_binder,
-            just::<Token<'a>, TokenInput<'a>, (), ()>(Ident("let"))
-                .ignore_then(raw_identifier.clone())
+            just::<Token<'src>, TokenInput<'src>, (), ()>(Ident("let"))
+                .ignore_then(raw_identifier)
                 .then(just(Ctrl(":")).ignore_then(raw_type_expr.clone()).or_not())
                 .then(
                     just(Ctrl(":="))
@@ -158,12 +148,15 @@ where
             let_binder
                 .then_ignore(just(Ctrl("\n")).repeated().at_least(1))
                 .then(raw_local_scope.clone())
-                .map(|(((ident, ty), def), scope)| RLet {
-                    name: bump.alloc(ident),
-                    ty: ty.map(|ty| &*bump.alloc(ty)),
-                    definition: bump.alloc(def),
-                    scope: bump.alloc(scope),
-                })
+                .map_with_span(|(((ident, ty), def), scope), span| RSrcPos(
+                    span,
+                    bump.alloc(RLet {
+                        name: bump.alloc(ident),
+                        ty: ty.map(|ty| &*bump.alloc(ty)),
+                        definition: bump.alloc(def),
+                        scope: bump.alloc(scope),
+                    })
+                ))
         );
 
         parser!(
@@ -190,7 +183,13 @@ where
             type_atom
                 .clone()
                 .then(atom.repeated().at_least(1).collect::<Vec<_>>())
-                .map(|(rator, rand)| RApplication(bump.alloc(rator), bump.alloc_slice_copy(&rand)))
+                .map_with_span(|(rator, rand), span| RSrcPos(
+                    span,
+                    bump.alloc(RApplication(
+                        bump.alloc(rator),
+                        bump.alloc_slice_copy(&rand)
+                    ))
+                ))
         );
 
         recursive_parser!(
@@ -236,7 +235,6 @@ mod debug {
     use std::marker::PhantomData;
     use std::sync::atomic::AtomicUsize;
 
-    use ansi_term::Color;
     use chumsky::zero_copy::error::Error;
     use chumsky::zero_copy::input::{Input, InputRef};
     use chumsky::zero_copy::internal::{Check, Emit, Mode};
@@ -245,24 +243,26 @@ mod debug {
     static DEBUG_LEVEL: AtomicUsize = AtomicUsize::new(0usize);
 
     #[derive(Clone)]
-    pub struct DebugParser<'a, P, O, E, S> {
+    pub struct DebugParser<'src, P, O, E, S> {
         inner: P,
         debug_msg: &'static str,
-        phantom: PhantomData<&'a (O, E, S)>,
+        phantom: PhantomData<&'src (O, E, S)>,
     }
 
-    pub trait ParserDebug<'a, P, I: ?Sized, O, E, S> {
-        fn debug(self, msg: &'static str) -> DebugParser<'a, P, O, E, S>;
+    impl<'src, P: Copy, O: Clone, E: Clone, S: Clone> Copy for DebugParser<'src, P, O, E, S> {}
+
+    pub trait ParserDebug<'src, P, I: ?Sized, O, E, S> {
+        fn debug(self, msg: &'static str) -> DebugParser<'src, P, O, E, S>;
     }
 
-    impl<'a, P, I, O, E, S> ParserDebug<'a, P, I, O, E, S> for P
+    impl<'src, P, I, O, E, S> ParserDebug<'src, P, I, O, E, S> for P
     where
-        P: Parser<'a, I, O, E, S> + Clone,
+        P: Parser<'src, I, O, E, S> + Clone,
         I: Input + ?Sized,
         E: Error<I>,
-        S: 'a,
+        S: 'src,
     {
-        fn debug(self, msg: &'static str) -> DebugParser<'a, P, O, E, S> {
+        fn debug(self, msg: &'static str) -> DebugParser<'src, P, O, E, S> {
             DebugParser {
                 inner: self,
                 debug_msg: msg,
@@ -271,61 +271,44 @@ mod debug {
         }
     }
 
-    impl<'a, P, I, O, E, S> Parser<'a, I, O, E, S> for DebugParser<'a, P, O, E, S>
+    impl<'src, P, I, O, E, S> Parser<'src, I, O, E, S> for DebugParser<'src, P, O, E, S>
     where
-        P: Parser<'a, I, O, E, S>,
+        P: Parser<'src, I, O, E, S>,
         I: Input + ?Sized,
         E: Error<I>,
-        S: 'a,
+        S: 'src,
     {
         fn go<M: Mode>(
             &self,
-            inp: &mut InputRef<'a, '_, I, E, S>,
+            inp: &mut InputRef<'src, '_, I, E, S>,
         ) -> chumsky::zero_copy::PResult<M, O, E>
         where
             Self: Sized,
         {
             let level = DEBUG_LEVEL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-            use ansi_term::Color::{self, *};
+            use ansi_term::Color::*;
 
             let mut pipes = String::new();
-            // TODO: make this more gay, use pride flags as background color and the inverse? color for the lines
-
-            let mut colorwheel = {
-                let light_blue = Black.on(RGB(91, 206, 250));
-                let pink = Black.on(RGB(245, 169, 184));
-                let white = Black.on(White);
-
-                let red = Black.on(RGB(228, 3, 3));
-                let orange = Black.on(RGB(255, 140, 0));
-                let yellow = Black.on(RGB(255, 237, 0));
-                let green = Black.on(RGB(0, 128, 38));
-                let indigo = Black.on(RGB(36, 64, 142));
-                let violet = Black.on(RGB(115, 41, 130));
-
-                [
-                    light_blue, pink, white, pink, light_blue, red, orange, yellow, green, indigo,
-                    violet,
-                ]
-                .into_iter()
-                .cycle()
-            };
+            let mut colorwheel = [Cyan, White, Green, Purple, Red].into_iter().cycle();
 
             for _ in 0..level {
                 let colored_pipe = format!("{}│ ", colorwheel.next().unwrap().prefix());
                 pipes.push_str(colored_pipe.as_str());
             }
 
+            let white = White.prefix().to_string();
+            let red = Red.prefix().to_string();
+            let green = Green.prefix().to_string();
             let current = colorwheel.next().unwrap().prefix().to_string();
 
-            println!("{pipes}{current}┌─ entered {}", self.debug_msg);
+            println!("{pipes}{current}┌─ {white}entered {}", self.debug_msg);
             let res = self.inner.go::<M>(inp);
 
             if res.is_ok() {
-                println!("{pipes}{current}└─ success {}", self.debug_msg);
+                println!("{pipes}{current}└─ {green}success {}", self.debug_msg);
             } else {
-                println!("{pipes}{current}└─ failed {}", self.debug_msg);
+                println!("{pipes}{current}└─ {red}failed {}", self.debug_msg);
             }
 
             DEBUG_LEVEL.store(level, std::sync::atomic::Ordering::Relaxed);
@@ -335,14 +318,14 @@ mod debug {
 
         fn go_emit(
             &self,
-            inp: &mut InputRef<'a, '_, I, E, S>,
+            inp: &mut InputRef<'src, '_, I, E, S>,
         ) -> chumsky::zero_copy::PResult<Emit, O, E> {
             Parser::<I, O, E, S>::go::<Emit>(self, inp)
         }
 
         fn go_check(
             &self,
-            inp: &mut InputRef<'a, '_, I, E, S>,
+            inp: &mut InputRef<'src, '_, I, E, S>,
         ) -> chumsky::zero_copy::PResult<Check, O, E> {
             Parser::<I, O, E, S>::go::<Check>(self, inp)
         }

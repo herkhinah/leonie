@@ -1,7 +1,11 @@
 #![feature(arc_unwrap_or_clone)]
 
+use ariadne::{Label, Report, ReportKind, Source};
 use chumsky::zero_copy::{prelude::Rich, Parser};
-use leonie::{lexer::lex, parser::raw_local_scope};
+use leonie::{
+    lexer::lex,
+    parser::raw_local_scope,
+};
 
 fn main() -> Result<(), ()> {
     let foo = r#"
@@ -18,16 +22,17 @@ fn main() -> Result<(), ()> {
     let refl : (A : _) -> (x : A) -> Eq A x x := λ A x P px. px
     let list1 : List Bool := cons _ true (cons _ false (nil _))
     let Nat  : U := (N : U) -> (N -> N) -> N -> N
-    let thousand : Nat
-        let five : Nat := λ N s z. s (s (s (s (s z))))
-        let add  : Nat -> Nat -> Nat := λ a b N s z. a N s (b N s z)
-        let mul  : Nat -> Nat -> Nat := λ a b N s z. a N (b N s) z
-        let ten      : Nat := add five five
-        let hundred  : Nat := mul ten ten
-        mul ten hundred
+    let five : Nat := λ N s z. s (s (s (s (s z))))
+    let add  : Nat -> Nat -> Nat := λ a b N s z. a N s (b N s z)
+    let mul  : Nat -> Nat -> Nat := λ a b N s z. a N (b N s) z
+    let ten      : Nat := add five five
+    let hundred  : Nat := mul ten ten
+    let thousand : Nat := mul ten hundred
     let eqTest : Eq _ hundred hundred := refl _ _
     U"#;
+    ;
     let bump = bumpalo::Bump::new();
+
 
     let (res, errs_lex) = lex::<Rich<str>>(foo);
 
@@ -35,8 +40,8 @@ fn main() -> Result<(), ()> {
 
     if let Some(res) = &res {
         let (res, errs_parse) = parser.parse(res);
-        res.unwrap();
     }
+
 
     Ok(())
 }
